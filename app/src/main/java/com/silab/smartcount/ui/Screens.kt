@@ -52,11 +52,15 @@ import com.silab.smartcount.data.api.Category
 import com.silab.smartcount.data.api.Member
 import com.silab.smartcount.data.api.Transaction
 import com.silab.smartcount.data.api.Tricount
+import com.silab.smartcount.data.api.TxType
 import com.silab.smartcount.data.db.Confidence
 import com.silab.smartcount.data.db.InboxEntry
+import com.silab.smartcount.data.repo.Savings
 import com.silab.smartcount.data.repo.Stats
 import com.silab.smartcount.notif.BankNotificationListener
 import com.silab.smartcount.notif.MovementPolicy
+import com.silab.smartcount.update.UpdatePhase
+import com.silab.smartcount.update.UpdateViewModel
 import com.silab.smartcount.ui.theme.DisplayNumber
 import com.silab.smartcount.ui.theme.ScreenPadding
 import com.silab.smartcount.ui.theme.SmartTheme
@@ -180,27 +184,49 @@ fun GroupsScreen(vm: MainViewModel, state: UiState, modifier: Modifier = Modifie
             if (t == null) {
                 item { EmptyState(state.loading) { showAddLink = true } }
             } else {
+                val isSavings = state.isSavings(t.id)
                 val myBalance = t.linkedMember?.let { Stats.balances(t)[it.displayName] } ?: 0.0
                 item {
-                    Hero(
-                        amount = formatMoney(myBalance, t.currency, signed = true),
-                        label = if (myBalance >= 0) "Te deben en ${t.title}" else "Debes en ${t.title}",
-                        amountColor = if (myBalance < 0) c.negative else c.positive
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Total del grupo ${formatMoney(Stats.totalSpent(t), t.currency)} · " +
-                            "${t.activeTransactions.size} movimientos",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = c.secondaryText,
-                        modifier = Modifier.padding(horizontal = ScreenPadding)
-                    )
+                    if (isSavings) {
+                        // En un grupo de ahorro no hay deudas que saldar: la cifra
+                        // que importa es lo que queda después de gastar.
+                        val summary = Savings.summary(t)
+                        Hero(
+                            amount = formatMoney(summary.saved, t.currency, signed = true),
+                            label = "Ahorrado en ${t.title}",
+                            amountColor = if (summary.saved < 0) c.negative else c.positive
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "${formatMoney(summary.income, t.currency)} ingresado · " +
+                                "${formatMoney(summary.spent, t.currency)} gastado",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.secondaryText,
+                            modifier = Modifier.padding(horizontal = ScreenPadding)
+                        )
+                    } else {
+                        Hero(
+                            amount = formatMoney(myBalance, t.currency, signed = true),
+                            label = if (myBalance >= 0) "Te deben en ${t.title}" else "Debes en ${t.title}",
+                            amountColor = if (myBalance < 0) c.negative else c.positive
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Total del grupo ${formatMoney(Stats.totalSpent(t), t.currency)} · " +
+                                "${t.activeTransactions.size} movimientos",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.secondaryText,
+                            modifier = Modifier.padding(horizontal = ScreenPadding)
+                        )
+                    }
                     Spacer(Modifier.height(20.dp))
-                    SegmentedTabs(listOf("Movimientos", "Balance"), innerTab) { innerTab = it }
+                    if (!isSavings) {
+                        SegmentedTabs(listOf("Movimientos", "Balance"), innerTab) { innerTab = it }
+                    }
                     Spacer(Modifier.height(8.dp))
                 }
 
-                if (innerTab == 0) {
+                if (isSavings || innerTab == 0) {
                     val txs = t.activeTransactions.sortedByDescending { it.date }
                     if (txs.isEmpty()) {
                         item {
@@ -235,7 +261,9 @@ fun GroupsScreen(vm: MainViewModel, state: UiState, modifier: Modifier = Modifie
                     )
                     .padding(start = ScreenPadding, end = ScreenPadding, top = 28.dp, bottom = 16.dp)
             ) {
-                PrimaryButton("Añadir gasto") { creating = true }
+                PrimaryButton(
+                    if (state.isSavings(t.id)) "Añadir movimiento" else "Añadir gasto"
+                ) { creating = true }
             }
         }
 
@@ -257,8 +285,12 @@ fun GroupsScreen(vm: MainViewModel, state: UiState, modifier: Modifier = Modifie
     }
 
     if (creating && t != null) {
-        ExpenseSheet(t, null, onDismiss = { creating = false }) { d, a, p, s, cat ->
-            vm.addExpense(t, d, a, p, s, cat); creating = false
+        ExpenseSheet(
+            t, null,
+            onDismiss = { creating = false },
+            savings = state.isSavings(t.id)
+        ) { draft ->
+            vm.addMovement(t, draft); creating = false
         }
     }
 
@@ -267,9 +299,14 @@ fun GroupsScreen(vm: MainViewModel, state: UiState, modifier: Modifier = Modifie
             ExpenseSheet(
                 t, tx,
                 onDismiss = { editing = null },
-                onDelete = { confirmDelete = tx; editing = null }
-            ) { d, a, p, s, cat ->
-                vm.editExpense(t, tx, d, a, p, s, cat); editing = null
+                onDelete = { confirmDelete = tx; editing = null },
+                savings = state.isSavings(t.id)
+            ) { draft ->
+                vm.editExpense(
+                    t, tx, draft.description, draft.amount, draft.owner,
+                    draft.splitAmong, draft.category
+                )
+                editing = null
             }
         }
     }
@@ -382,6 +419,29 @@ private fun BalanceSection(t: Tricount) {
 // Hoja: crear / editar gasto
 // ===========================================================================
 
+/**
+ * Lo que la hoja devuelve al guardar. Un solo objeto en vez de seis parámetros
+ * sueltos, porque cada tipo de movimiento usa unos campos y no otros.
+ */
+data class MovementDraft(
+    val kind: TxType,
+    val description: String,
+    val amount: Double,
+    /** Gasto: quien paga. Ingreso: quien recibe. Transferencia: quien envía. */
+    val owner: Member,
+    /** Solo en las transferencias: la otra punta. */
+    val counterpart: Member? = null,
+    val splitAmong: List<Member> = emptyList(),
+    val category: Category? = null
+)
+
+private val TxType.label: String
+    get() = when (this) {
+        TxType.NORMAL -> "Gasto"
+        TxType.INCOME -> "Ingreso"
+        TxType.BALANCE -> "Transferencia"
+    }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExpenseSheet(
@@ -391,11 +451,19 @@ fun ExpenseSheet(
     onDelete: (() -> Unit)? = null,
     prefillAmount: Double? = null,
     prefillDescription: String? = null,
-    onSave: (String, Double, Member, List<Member>, Category?) -> Unit
+    /** En un grupo de ahorro los papeles están fijados y sobran los selectores. */
+    savings: Boolean = false,
+    onSave: (MovementDraft) -> Unit
 ) {
     val c = SmartTheme.colors
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val activeMembers = remember(t) { t.members.filter { it.status == "ACTIVE" } }
+    val me = remember(t) { t.linkedMember ?: activeMembers.firstOrNull() }
+    val incomeMember = remember(t) { Savings.incomeMember(t) }
+
+    // Al editar, el tipo no se toca: la API edita cada uno por su camino.
+    var kind by remember { mutableStateOf(existing?.type ?: TxType.NORMAL) }
+    val kindLocked = existing != null
 
     var description by remember { mutableStateOf(existing?.description ?: prefillDescription.orEmpty()) }
     var amountText by remember {
@@ -403,8 +471,16 @@ fun ExpenseSheet(
             (existing?.amount?.abs ?: prefillAmount)?.let { String.format(Locale.US, "%.2f", it) } ?: ""
         )
     }
-    var payer by remember {
-        mutableStateOf(t.memberByUuid(existing?.ownerUuid) ?: t.linkedMember ?: activeMembers.firstOrNull())
+    var owner by remember {
+        mutableStateOf(t.memberByUuid(existing?.ownerUuid) ?: me)
+    }
+    var counterpart by remember {
+        mutableStateOf(
+            existing?.allocations
+                ?.firstOrNull { it.membershipUuid != existing.ownerUuid }
+                ?.let { t.memberByUuid(it.membershipUuid) }
+                ?: activeMembers.firstOrNull { it.uuid != me?.uuid }
+        )
     }
     var split by remember {
         mutableStateOf(
@@ -414,9 +490,31 @@ fun ExpenseSheet(
     }
     var category by remember { mutableStateOf(Category.fromApi(existing?.category)) }
 
+    // En un grupo de ahorro los papeles son fijos: tú gastas, «Ingresos» ingresa.
+    val effectiveOwner = when {
+        !savings -> owner
+        kind == TxType.INCOME -> incomeMember ?: owner
+        else -> me ?: owner
+    }
+    val effectiveSplit = when {
+        savings -> listOfNotNull(me)
+        kind == TxType.BALANCE -> listOfNotNull(counterpart)
+        else -> split.toList()
+    }
+
     val amount = amountText.replace(',', '.').toDoubleOrNull()
     val valid = description.isNotBlank() && amount != null && amount > 0 &&
-        payer != null && split.isNotEmpty()
+        effectiveOwner != null &&
+        when (kind) {
+            TxType.BALANCE -> counterpart != null && counterpart?.uuid != effectiveOwner.uuid
+            else -> effectiveSplit.isNotEmpty()
+        }
+
+    val title = when {
+        existing != null -> "Editar " + kind.label.lowercase()
+        kind == TxType.BALANCE -> "Nueva transferencia"
+        else -> "Nuevo " + kind.label.lowercase()
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -435,7 +533,7 @@ fun ExpenseSheet(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (existing == null) "Nuevo gasto" else "Editar gasto",
+                        title,
                         style = MaterialTheme.typography.titleLarge,
                         color = c.primaryText
                     )
@@ -447,15 +545,35 @@ fun ExpenseSheet(
                 }
             }
 
+            if (!kindLocked) {
+                item {
+                    val kinds = if (savings) {
+                        listOf(TxType.NORMAL, TxType.INCOME)
+                    } else {
+                        listOf(TxType.NORMAL, TxType.INCOME, TxType.BALANCE)
+                    }
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = ScreenPadding),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(kinds, key = { it.name }) { option ->
+                            PillChip(option.label, option == kind) { kind = option }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+
             item {
                 Column(Modifier.padding(horizontal = ScreenPadding)) {
-                    SmartField(amountText, { amountText = it }, "Importe (${t.currency})", KeyboardType.Decimal)
+                    SmartField(amountText, { amountText = it }, "Importe (" + t.currency + ")", KeyboardType.Decimal)
                     Spacer(Modifier.height(12.dp))
                     SmartField(description, { description = it }, "Descripción")
                     Spacer(Modifier.height(4.dp))
-                    if (amount != null && split.isNotEmpty()) {
+                    if (amount != null && kind != TxType.BALANCE && effectiveSplit.size > 1) {
                         Text(
-                            "${formatMoney(amount / split.size, t.currency)} por persona · ${split.size} personas",
+                            formatMoney(amount / effectiveSplit.size, t.currency) +
+                                " por persona · " + effectiveSplit.size + " personas",
                             style = MaterialTheme.typography.bodySmall,
                             color = c.secondaryText,
                             modifier = Modifier.padding(top = 8.dp)
@@ -464,52 +582,102 @@ fun ExpenseSheet(
                 }
             }
 
-            item {
-                SectionHeader("Pagado por")
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = ScreenPadding),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(activeMembers, key = { it.uuid }) { m ->
-                        PillChip(m.displayName, payer?.uuid == m.uuid) { payer = m }
-                    }
-                }
-            }
-
-            item {
-                SectionHeader("Repartido entre") {
+            if (savings) {
+                item {
                     Text(
-                        if (split.size == activeMembers.size) "Quitar todos" else "Seleccionar todos",
-                        color = c.secondaryText,
+                        if (kind == TxType.INCOME) {
+                            "Entra al grupo desde «" + Savings.INCOME_MEMBER + "»."
+                        } else {
+                            "Sale del grupo. Se descuenta de lo ahorrado."
+                        },
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.clickable {
-                            split = if (split.size == activeMembers.size) emptySet() else activeMembers.toSet()
-                        }
+                        color = c.secondaryText,
+                        modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 12.dp)
                     )
                 }
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = ScreenPadding),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(activeMembers, key = { it.uuid }) { m ->
-                        PillChip(m.displayName, split.any { it.uuid == m.uuid }) {
-                            split = if (split.any { it.uuid == m.uuid }) {
-                                split.filterNot { it.uuid == m.uuid }.toSet()
-                            } else split + m
+            } else {
+                item {
+                    SectionHeader(
+                        when (kind) {
+                            TxType.NORMAL -> "Pagado por"
+                            TxType.INCOME -> "Recibido por"
+                            TxType.BALANCE -> "De"
+                        }
+                    )
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = ScreenPadding),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(activeMembers, key = { it.uuid }) { m ->
+                            PillChip(m.displayName, owner?.uuid == m.uuid) { owner = m }
+                        }
+                    }
+                }
+
+                if (kind == TxType.BALANCE) {
+                    item {
+                        SectionHeader("A")
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = ScreenPadding),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(activeMembers, key = { it.uuid }) { m ->
+                                PillChip(m.displayName, counterpart?.uuid == m.uuid) { counterpart = m }
+                            }
+                        }
+                        if (counterpart != null && counterpart?.uuid == owner?.uuid) {
+                            Text(
+                                "Elige dos personas distintas.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.negative,
+                                modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 8.dp)
+                            )
+                        }
+                    }
+                } else {
+                    item {
+                        SectionHeader("Repartido entre") {
+                            Text(
+                                if (split.size == activeMembers.size) "Quitar todos" else "Seleccionar todos",
+                                color = c.secondaryText,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.clickable {
+                                    split = if (split.size == activeMembers.size) {
+                                        emptySet()
+                                    } else {
+                                        activeMembers.toSet()
+                                    }
+                                }
+                            )
+                        }
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = ScreenPadding),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(activeMembers, key = { it.uuid }) { m ->
+                                PillChip(m.displayName, split.any { it.uuid == m.uuid }) {
+                                    split = if (split.any { it.uuid == m.uuid }) {
+                                        split.filterNot { it.uuid == m.uuid }.toSet()
+                                    } else split + m
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            item {
-                SectionHeader("Categoría")
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = ScreenPadding),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(Category.entries.toList(), key = { it.name }) { cat ->
-                        PillChip("${cat.emoji} ${cat.label}", category == cat) {
-                            category = if (category == cat) null else cat
+            // Una transferencia no es un gasto de nada: no lleva categoría.
+            if (kind != TxType.BALANCE) {
+                item {
+                    SectionHeader("Categoría")
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = ScreenPadding),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(Category.entries.toList(), key = { it.name }) { cat ->
+                            PillChip(cat.emoji + " " + cat.label, category == cat) {
+                                category = if (category == cat) null else cat
+                            }
                         }
                     }
                 }
@@ -518,14 +686,29 @@ fun ExpenseSheet(
             item {
                 Column(Modifier.padding(ScreenPadding)) {
                     Spacer(Modifier.height(8.dp))
-                    PrimaryButton(if (existing == null) "Añadir gasto" else "Guardar cambios", valid) {
-                        onSave(description.trim(), amount!!, payer!!, split.toList(), category)
+                    val action = if (existing == null) {
+                        "Añadir " + kind.label.lowercase()
+                    } else {
+                        "Guardar cambios"
+                    }
+                    PrimaryButton(action, valid) {
+                        onSave(
+                            MovementDraft(
+                                kind = kind,
+                                description = description.trim(),
+                                amount = amount!!,
+                                owner = effectiveOwner!!,
+                                counterpart = counterpart,
+                                splitAmong = effectiveSplit,
+                                category = category
+                            )
+                        )
                     }
                     if (onDelete != null) {
                         Spacer(Modifier.height(12.dp))
                         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                             Text(
-                                "Eliminar gasto",
+                                "Eliminar " + kind.label.lowercase(),
                                 color = c.negative,
                                 fontWeight = FontWeight.Medium,
                                 modifier = Modifier.clickable(onClick = onDelete).padding(12.dp)
@@ -950,9 +1133,15 @@ private fun AssignSheet(
 // ===========================================================================
 
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier) {
+fun SettingsScreen(
+    vm: MainViewModel,
+    state: UiState,
+    updateVm: UpdateViewModel,
+    modifier: Modifier = Modifier
+) {
     val c = SmartTheme.colors
     val context = LocalContext.current
+    val update by updateVm.state.collectAsStateWithLifecycle()
     val app = context.applicationContext as SmartCountApp
     val registry = app.bankRegistry
 
@@ -1081,6 +1270,72 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         }
 
         item {
+            SectionHeader("Grupos de ahorro")
+            Text(
+                "Un grupo de ahorro es un grupo normal leído de otra manera: lo que " +
+                    "creas tú son gastos, lo que crea «${Savings.INCOME_MEMBER}» son " +
+                    "ingresos, y el ahorro es la resta. Al activarlo se añade ese " +
+                    "miembro al grupo si no existe.",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.secondaryText,
+                modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 4.dp)
+            )
+            if (state.tricounts.isEmpty()) {
+                Text(
+                    "Todavía no hay grupos que convertir.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.secondaryText,
+                    modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 4.dp)
+                )
+            }
+        }
+        items(state.tricounts, key = { "savings-${it.id}" }) { group ->
+            val on = state.isSavings(group.id)
+            SmartRow(
+                title = "${group.emoji ?: ""} ${group.title}".trim(),
+                subtitle = if (on) {
+                    val summary = Savings.summary(group)
+                    "Ahorrado ${formatMoney(summary.saved, group.currency, signed = true)}"
+                } else {
+                    "Grupo normal"
+                },
+                value = if (on) "Ahorro" else "Convertir",
+                valueColor = if (on) c.brand else c.secondaryText,
+                onClick = { vm.setSavings(group, !on) }
+            )
+            SmartDivider()
+        }
+
+        item {
+            SectionHeader("Actualizaciones")
+            SmartRow(
+                title = "Buscar actualizaciones",
+                subtitle = update.manualResult
+                    ?: "Se comprueba sola al abrir la app",
+                value = if (update.phase == UpdatePhase.CHECKING) "…" else "Comprobar",
+                valueColor = if (update.manualResult?.startsWith("No se pudo") == true) {
+                    c.negative
+                } else {
+                    c.brand
+                },
+                onClick = { updateVm.checkManually() }
+            )
+            SmartDivider()
+            SmartRow(
+                title = "Instalar apps desconocidas",
+                subtitle = if (update.canInstall) {
+                    "Concedido · las actualizaciones se instalan con un toque"
+                } else {
+                    "Sin conceder · hace falta para instalar la actualización"
+                },
+                value = if (update.canInstall) "✓" else "→",
+                valueColor = if (update.canInstall) c.brand else c.secondaryText,
+                onClick = { updateVm.openPermissionSettings() }
+            )
+            SmartDivider()
+        }
+
+        item {
             SectionHeader("Acerca de")
             Column(Modifier.padding(horizontal = ScreenPadding, vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1093,7 +1348,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                             color = c.primaryText
                         )
                         Text(
-                            "Versión 0.1.0",
+                            "Versión ${updateVm.installedVersionName} " +
+                                "(build ${updateVm.installedVersionCode})",
                             style = MaterialTheme.typography.bodySmall,
                             color = c.secondaryText
                         )

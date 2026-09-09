@@ -9,3 +9,6 @@ captures/
 node_modules/
 sim/shots/
 sim/__pycache__/
+keystore.properties
+*.jks
+*.keystore

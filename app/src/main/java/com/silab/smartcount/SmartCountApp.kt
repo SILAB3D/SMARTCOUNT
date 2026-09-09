@@ -8,6 +8,7 @@ import com.silab.smartcount.data.db.AppDatabase
 import com.silab.smartcount.data.cache.GroupCache
 import com.silab.smartcount.notif.BankRegistry
 import com.silab.smartcount.notif.DetectionNotifier
+import com.silab.smartcount.data.repo.SavingsGroups
 import com.silab.smartcount.notif.NotificationRules
 
 class SmartCountApp : Application() {
@@ -24,6 +25,8 @@ class SmartCountApp : Application() {
         private set
     lateinit var notificationRules: NotificationRules
         private set
+    lateinit var savingsGroups: SavingsGroups
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -35,6 +38,7 @@ class SmartCountApp : Application() {
         bankRegistry = BankRegistry(this)
         groupCache = GroupCache(this)
         notificationRules = NotificationRules(this)
+        savingsGroups = SavingsGroups(this)
         DetectionNotifier.ensureChannel(this)
     }
 }

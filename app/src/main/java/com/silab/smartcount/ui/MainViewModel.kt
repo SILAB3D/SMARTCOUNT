@@ -9,9 +9,11 @@ import com.silab.smartcount.data.api.Member
 import com.silab.smartcount.data.api.Transaction
 import com.silab.smartcount.data.api.Tricount
 import com.silab.smartcount.data.api.TricountClient
+import com.silab.smartcount.data.api.TxType
 import com.silab.smartcount.data.db.DetectedKind
 import com.silab.smartcount.data.db.InboxEntry
 import com.silab.smartcount.data.db.InboxStatus
+import com.silab.smartcount.data.repo.Savings
 import com.silab.smartcount.notif.DetectionNotifier
 import com.silab.smartcount.widget.SmartWidgets
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,9 +29,13 @@ data class UiState(
     val tricounts: List<Tricount> = emptyList(),
     val selectedId: Int? = null,
     val error: String? = null,
-    val message: String? = null
+    val message: String? = null,
+    /** Grupos marcados como grupos de ahorro. La marca es local a este móvil. */
+    val savingsIds: Set<Int> = emptySet()
 ) {
     val selected: Tricount? get() = tricounts.firstOrNull { it.id == selectedId }
+
+    fun isSavings(id: Int?): Boolean = id != null && id in savingsIds
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -38,6 +44,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val client: TricountClient get() = appCtx.client
     private val dao = appCtx.database.inboxDao()
     private val cache = appCtx.groupCache
+    private val savings = appCtx.savingsGroups
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -56,7 +63,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         dao.observeByStatus(InboxStatus.PENDING)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    init { refresh() }
+    init {
+        _state.value = _state.value.copy(savingsIds = savings.ids())
+        refresh()
+    }
 
     fun refresh() = launchGuarded {
         _state.value = _state.value.copy(loading = true, error = null)
@@ -114,6 +124,74 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ) = launchGuarded {
         client.createExpense(tricount, description, amount, payer, splitAmong, category, date = date)
         _state.value = _state.value.copy(message = "Gasto añadido")
+        refreshQuiet()
+    }
+
+    /** Alta de cualquiera de los tres tipos, según lo que traiga la hoja. */
+    fun addMovement(tricount: Tricount, draft: MovementDraft) = when (draft.kind) {
+        TxType.NORMAL -> addExpense(
+            tricount, draft.description, draft.amount, draft.owner, draft.splitAmong, draft.category
+        )
+        TxType.INCOME -> addIncome(
+            tricount, draft.description, draft.amount, draft.owner, draft.splitAmong, draft.category
+        )
+        TxType.BALANCE -> addTransfer(
+            tricount, draft.description, draft.amount, draft.owner,
+            draft.counterpart ?: draft.owner
+        )
+    }
+
+    /** Ingreso: dinero que entra al grupo (tipo INCOME). */
+    fun addIncome(
+        tricount: Tricount,
+        description: String,
+        amount: Double,
+        receiver: Member,
+        splitAmong: List<Member>,
+        category: Category?,
+        date: Date = Date()
+    ) = launchGuarded {
+        client.createIncome(tricount, description, amount, receiver, splitAmong, category, date = date)
+        _state.value = _state.value.copy(message = "Ingreso añadido")
+        refreshQuiet()
+    }
+
+    /** Transferencia entre dos miembros: el tipo BALANCE de Tricount. */
+    fun addTransfer(
+        tricount: Tricount,
+        description: String,
+        amount: Double,
+        from: Member,
+        to: Member,
+        date: Date = Date()
+    ) = launchGuarded {
+        require(from.uuid != to.uuid) { "Una transferencia necesita dos personas distintas" }
+        client.createReimbursement(tricount, from, to, amount, description, date = date)
+        _state.value = _state.value.copy(message = "Transferencia añadida")
+        refreshQuiet()
+    }
+
+    // -----------------------------------------------------------------------
+    // Grupos de ahorro
+    // -----------------------------------------------------------------------
+
+    /**
+     * Convierte un grupo en grupo de ahorro y al revés. Al activarlo se crea el
+     * miembro *Ingresos* si no existe: sin él no hay de dónde venga el dinero.
+     */
+    fun setSavings(tricount: Tricount, enabled: Boolean) = launchGuarded {
+        if (enabled && !Savings.isReady(tricount)) {
+            client.addMembers(tricount, listOf(Savings.INCOME_MEMBER))
+        }
+        savings.mark(tricount.id, enabled)
+        _state.value = _state.value.copy(
+            savingsIds = savings.ids(),
+            message = if (enabled) {
+                "«${tricount.title}» es ahora un grupo de ahorro"
+            } else {
+                "«${tricount.title}» vuelve a ser un grupo normal"
+            }
+        )
         refreshQuiet()
     }
 

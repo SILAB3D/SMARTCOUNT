@@ -39,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.MutableState
@@ -49,23 +50,32 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silab.smartcount.ui.GroupsScreen
 import com.silab.smartcount.ui.InboxScreen
 import com.silab.smartcount.ui.MainViewModel
 import com.silab.smartcount.ui.SettingsScreen
 import com.silab.smartcount.ui.StatsScreen
+import com.silab.smartcount.ui.UpdateSheet
 import com.silab.smartcount.ui.theme.SmartCountTheme
 import com.silab.smartcount.notif.DetectionNotifier
 import com.silab.smartcount.ui.theme.SmartTheme
+import com.silab.smartcount.update.UpdatePhase
+import com.silab.smartcount.update.UpdateViewModel
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
     private val vm: MainViewModel by viewModels()
+    private val updateVm: UpdateViewModel by viewModels()
     private val startTab = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,7 +89,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handleShare(intent)
-        setContent { SmartCountTheme { AppRoot(vm, startTab) } }
+        setContent { SmartCountTheme { AppRoot(vm, updateVm, startTab) } }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -114,6 +124,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Cuánto aguanta el aviso inferior si nadie lo toca. */
+private const val TOAST_MILLIS = 10_000L
+
 private enum class Tab(val label: String, val icon: ImageVector) {
     GROUPS("Grupos", Icons.Outlined.People),
     STATS("Estadísticas", Icons.Outlined.BarChart),
@@ -122,11 +135,30 @@ private enum class Tab(val label: String, val icon: ImageVector) {
 }
 
 @Composable
-fun AppRoot(vm: MainViewModel, startTab: MutableState<String?> = mutableStateOf(null)) {
+fun AppRoot(
+    vm: MainViewModel,
+    updateVm: UpdateViewModel,
+    startTab: MutableState<String?> = mutableStateOf(null)
+) {
     val c = SmartTheme.colors
     val state by vm.state.collectAsStateWithLifecycle()
     val inbox by vm.inbox.collectAsStateWithLifecycle()
+    val update by updateVm.state.collectAsStateWithLifecycle()
     var tab by remember { mutableStateOf(Tab.GROUPS) }
+
+    // Comprobación silenciosa del arranque: si falla, no molesta a nadie.
+    LaunchedEffect(Unit) { updateVm.checkOnLaunch() }
+
+    // El permiso de instalar se concede fuera de la app y nada avisa de que
+    // haya cambiado, así que se relee cada vez que volvemos al primer plano.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) updateVm.recheckInstallPermission()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // El widget y la notificación pueden abrir la app en una pestaña concreta.
     LaunchedEffect(startTab.value) {
@@ -138,17 +170,49 @@ fun AppRoot(vm: MainViewModel, startTab: MutableState<String?> = mutableStateOf(
     }
     var toast by remember { mutableStateOf<String?>(null) }
 
+    // Recoger el mensaje y retirarlo son dos efectos separados a propósito:
+    // clearMessages() cambia las claves de este efecto, así que un delay aquí
+    // dentro se cancelaría antes de tiempo y el aviso se quedaría fijo.
     LaunchedEffect(state.error, state.message) {
         val msg = state.error ?: state.message
         if (msg != null) {
             toast = msg
             vm.clearMessages()
-            delay(2600)
+        }
+    }
+
+    LaunchedEffect(toast) {
+        if (toast != null) {
+            delay(TOAST_MILLIS)
             toast = null
         }
     }
 
-    Box(Modifier.fillMaxSize().background(c.background)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(c.background)
+            // Tocar en cualquier sitio retira el aviso. Se observa el gesto en
+            // la pasada Initial sin consumirlo, para no comerse el toque que
+            // iba destinado a lo que hay debajo.
+            .then(
+                if (toast != null) {
+                    Modifier.pointerInput(toast) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.any { it.pressed }) {
+                                    toast = null
+                                    break
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Modifier
+                }
+            )
+    ) {
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
 
             // Cambio de pestaña con fundido: sin saltos ni recomposición visible.
@@ -164,7 +228,7 @@ fun AppRoot(vm: MainViewModel, startTab: MutableState<String?> = mutableStateOf(
                     Tab.GROUPS -> GroupsScreen(vm, state)
                     Tab.STATS -> StatsScreen(state)
                     Tab.INBOX -> InboxScreen(vm, state, inbox)
-                    Tab.SETTINGS -> SettingsScreen()
+                    Tab.SETTINGS -> SettingsScreen(vm, state, updateVm)
                 }
             }
 
@@ -172,6 +236,16 @@ fun AppRoot(vm: MainViewModel, startTab: MutableState<String?> = mutableStateOf(
                 selected = tab,
                 inboxCount = inbox.size,
                 onSelect = { tab = it }
+            )
+        }
+
+        if (update.phase != UpdatePhase.IDLE && update.phase != UpdatePhase.CHECKING) {
+            UpdateSheet(
+                state = update,
+                installedVersionName = updateVm.installedVersionName,
+                onPrimary = updateVm::primaryAction,
+                onGrantPermission = updateVm::openPermissionSettings,
+                onDismiss = updateVm::dismiss
             )
         }
 
@@ -183,7 +257,8 @@ fun AppRoot(vm: MainViewModel, startTab: MutableState<String?> = mutableStateOf(
             ) {
                 Snackbar(
                     containerColor = c.chipSelected,
-                    contentColor = c.chipSelectedText
+                    contentColor = c.chipSelectedText,
+                    modifier = Modifier.clickable { toast = null }
                 ) { Text(msg) }
             }
         }

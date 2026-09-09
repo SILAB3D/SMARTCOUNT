@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- La APK descargada vive en la caché; el instalador la lee por content:// -->
+    <cache-path name="updates" path="updates/" />
+</paths>

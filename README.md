@@ -65,6 +65,57 @@ Cabeceras en todas las llamadas: `app-id`, `X-Bunq-Client-Request-Id`, `User-Age
 del dispositivo. Si las borras pierdes el acceso a los grupos sincronizados con esa
 instalación: hay que volver a unirse con el enlace público. Ajustes permite exportarlas.
 
+## Movimientos: gasto, ingreso y transferencia
+
+La hoja de alta ofrece los tres tipos que entiende Tricount, y cada uno cambia
+los campos que pide, porque no comparten forma:
+
+| Tipo | API | Campos | Se reparte |
+|---|---|---|---|
+| **Gasto** | `NORMAL` | pagado por, repartido entre, categoría | sí, en negativo |
+| **Ingreso** | `INCOME` | recibido por, repartido entre, categoría | sí, en positivo |
+| **Transferencia** | `BALANCE` | de, a | no: una sola asignación |
+
+Una transferencia no lleva categoría porque no es un gasto de nada: es dinero
+que cambia de manos dentro del grupo. Y exige dos personas distintas — la hoja
+no deja guardar si coinciden.
+
+**Al editar, el tipo queda fijo.** La API edita cada tipo por su propio camino
+(el signo del importe y la forma de las asignaciones dependen de él), así que
+cambiar de tipo es borrar y volver a crear, no editar.
+
+## Grupos de ahorro
+
+Un grupo de ahorro **no es un tipo de grupo de Tricount**: es un grupo normal
+leído de otra manera, y la marca vive solo en este móvil. Para Tricount sigue
+siendo un grupo con sus movimientos, así que la app oficial lo abre sin
+enterarse de nada. Cualquier grupo se convierte, y se revierte, desde
+Ajustes → *Grupos de ahorro*.
+
+La convención es la que hace el trabajo:
+
+- dos miembros: **tú** y uno llamado **Ingresos**,
+- lo que creas **tú** son los gastos del grupo,
+- lo que crea **Ingresos** hacia ti son los ingresos,
+- el **ahorro** es la resta: ingresos − gastos.
+
+Al convertir un grupo se añade el miembro *Ingresos* si no existe; sin él no hay
+de dónde venga el dinero.
+
+**Se mira el propietario de cada movimiento, no su tipo.** Es lo que distingue
+de qué lado viene el dinero sea cual sea el tipo con el que se creó: un ingreso
+registrado como `INCOME` y un reembolso `BALANCE` de *Ingresos* hacia ti son la
+misma cosa para el ahorro, y filtrar por tipo dejaría fuera uno de los dos.
+
+Qué cambia en la pantalla del grupo:
+
+- la cifra grande es **lo ahorrado**, no lo que te deben — en un grupo de ahorro
+  no hay deudas que saldar,
+- debajo, cuánto ha entrado y cuánto ha salido,
+- desaparece la pestaña *Balance*, que no significa nada aquí,
+- la hoja de alta se queda en dos botones, *Gasto* e *Ingreso*, y sin selectores
+  de miembros: los papeles ya están decididos.
+
 ## Detección de movimientos
 
 `NotificationListenerService` escucha las notificaciones de las apps de banco que
@@ -227,6 +278,55 @@ El emparejamiento de nombres tolera que el banco diga «BEN TORRES» y el grupo
 solo «Ben». Todo queda en la bandeja como enviado, así que se puede corregir
 después en la app.
 
+## Actualización automática
+
+Un `git push` a `main` acaba convertido en una actualización instalada en el
+móvil, sin descargar ningún APK a mano.
+
+```
+push a main → GitHub Actions compila y FIRMA la APK → Release v<name>-b<code>
+                                                          │
+        la app, al arrancar: consulta la API, compara, descarga, instala
+```
+
+**Android no deja instalar en silencio** a una app normal: eso exige ser *device
+owner* o app de sistema. Comprobar, descargar y preparar sí es automático; el
+último paso es siempre un diálogo del sistema que confirma la persona.
+
+**El `versionCode` es el número de commits** (`git rev-list --count HEAD`), no la
+versión semántica: crece solo y nadie tiene que acordarse de subirlo. La
+contrapartida es que no se puede reescribir la historia de `main` — un `rebase`
+o un `push --force` que reduzca el número de commits deja las releases nuevas
+por debajo de lo ya instalado y dejan de verse como actualizaciones. Hay un
+suelo (`versionCodeFloor`) para que un checkout superficial en CI no publique un
+`versionCode` 1 y rompa el canal en silencio.
+
+**La versión se lee de la etiqueta de la release** (`v0.1.0-b23` → 23), que ya
+viene en la respuesta de la API. Una petición y ningún metadato suelto que
+mantener sincronizado.
+
+**La comprobación del arranque se calla sus errores**: sin cobertura, o si
+GitHub responde 403, la app sigue funcionando sin molestar. El precio es que un
+fallo real se ve igual que «no hay novedades», así que Ajustes lleva una
+comprobación **manual** que sí cuenta lo que ocurre — versión encontrada, ya al
+día, o el error exacto. No es un adorno: es la única forma de distinguir «no hay
+nada» de «está roto».
+
+**El permiso de instalar apps desconocidas se concede fuera de la app**, en una
+pantalla del sistema, y nada dentro avisa de que ha cambiado. Se relee en cada
+`ON_RESUME`; como la APK ya está descargada, al volver el botón dice
+directamente «Instalar».
+
+Requisitos para que el canal funcione:
+
+- **El repositorio debe ser público.** La app consulta la API sin credenciales;
+  en uno privado recibiría un 404 y no ofrecería nada nunca. Meter un token en
+  la app no es una opción.
+- **Una clave de firma propia**, en `keystore.properties` (local) o en los
+  secrets `SMARTCOUNT_KEYSTORE_BASE64`, `SMARTCOUNT_STORE_PASSWORD`,
+  `SMARTCOUNT_KEY_ALIAS` y `SMARTCOUNT_KEY_PASSWORD` (CI). Si se pierde, ningún
+  dispositivo con la app instalada podrá actualizarse nunca más.
+
 ## Compilar y probar
 
 Requisitos: **JDK 17 o superior**, **Android SDK** con la plataforma **API 35**,
@@ -304,6 +404,7 @@ notif/        NotificationListenerService, parser de movimientos, registro de ba
 widget/       Widgets Glance: saldo del grupo y alta rápida
 ui/           Compose: pestañas, hojas inferiores, componentes y tema
 ui/theme/     Tokens de color (incluida la marca) y tipografía, claro y oscuro
+update/       Canal de actualización: consulta de release, descarga e instalación
 branding/     Icono en SVG (color y monocromo)
 util/         Codificador PKCS#1
 ```
