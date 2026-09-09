@@ -12,3 +12,5 @@ sim/__pycache__/
 keystore.properties
 *.jks
 *.keystore
+*.base64.txt
+*.local.txt
