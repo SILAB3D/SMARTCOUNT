@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmartCount — prototipo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 108 108'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%231B1D28'/%3E%3Cstop offset='0.55' stop-color='%230C0D13'/%3E%3Cstop offset='1' stop-color='%2305060A'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='108' height='108' rx='24' fill='url(%23g)'/%3E%3Cpath d='M26.50,49.50 H81.50 A4.50,4.50 0 0 1 86.00,54.00 V54.00 A4.50,4.50 0 0 1 81.50,58.50 H26.50 A4.50,4.50 0 0 1 22.00,54.00 V54.00 A4.50,4.50 0 0 1 26.50,49.50 Z' fill='white'/%3E%3Cpath d='M38.50,31.50 H38.50 A4.50,4.50 0 0 1 43.00,36.00 V72.00 A4.50,4.50 0 0 1 38.50,76.50 H38.50 A4.50,4.50 0 0 1 34.00,72.00 V36.00 A4.50,4.50 0 0 1 38.50,31.50 Z' fill='white'/%3E%3Cpath d='M64.70,38.50 a6.30,6.30 0 1 0 12.60,0 a6.30,6.30 0 1 0 -12.60,0 Z' fill='%234A6CFF'/%3E%3Cpath d='M64.70,69.50 a6.30,6.30 0 1 0 12.60,0 a6.30,6.30 0 1 0 -12.60,0 Z' fill='%234A6CFF'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#fff; --surface:#f7f7f8; --text:#07070a; --text2:#74747a;
+  --divider:#ededf0; --chip:#f2f2f4; --chipSel:#07070a; --chipSelText:#fff;
+  --pos:#00b862; --neg:#ff3b3b; --brand:#3355e6; --pad:20px;
+}
+[data-theme="dark"]{
+  --bg:#000; --surface:#0e0e10; --text:#fff; --text2:#8a8a8e;
+  --divider:#1c1c1e; --chip:#161618; --chipSel:#fff; --chipSelText:#000;
+  --pos:#00c46a; --neg:#ff4d4d; --brand:#4a6cff;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+  font-size:15px;line-height:1.35;}
+#app{max-width:430px;margin:0 auto;height:100vh;max-height:100vh;display:flex;flex-direction:column;
+  background:var(--bg);position:relative;overflow:hidden}
+.screen{flex:1;min-height:0;overflow-y:auto;padding-bottom:24px;}
+.screen.hasfab{padding-bottom:110px;animation:fade .16s ease}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+h1{font-size:32px;font-weight:600;letter-spacing:-.8px;margin:0}
+.title-row{display:flex;justify-content:space-between;align-items:center;padding:var(--pad)}
+.hero{padding:8px var(--pad)}
+.hero .num{font-size:44px;font-weight:600;letter-spacing:-1.4px;line-height:1.08}
+.hero .lbl{color:var(--text2);font-size:15px;margin-top:6px}
+.sub{color:var(--text2);font-size:13px;padding:0 var(--pad)}
+.section{padding:14px var(--pad) 10px;color:var(--text2);font-size:13px;
+  font-weight:500;letter-spacing:.6px;text-transform:uppercase;
+  display:flex;justify-content:space-between;align-items:center}
+.pills{display:flex;gap:8px;padding:0 var(--pad);overflow-x:auto;scrollbar-width:none}
+.pills::-webkit-scrollbar{display:none}
+.pill{white-space:nowrap;border:0;border-radius:100px;padding:10px 16px;font-size:15px;
+  font-weight:500;background:var(--chip);color:var(--text2);cursor:pointer;
+  transition:background .18s,color .18s;font-family:inherit}
+.pill.on{background:var(--chipSel);color:var(--chipSelText)}
+.row{display:flex;align-items:center;gap:14px;padding:16px var(--pad);cursor:pointer}
+.row:active{background:var(--chip)}
+.av{width:38px;height:38px;border-radius:50%;background:var(--chip);color:var(--text2);
+  display:flex;align-items:center;justify-content:center;font-weight:500;flex:0 0 auto}
+.row .mid{flex:1;min-width:0}
+.row .t{font-size:17px;font-weight:500;letter-spacing:-.2px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.row .s{font-size:13px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .v{font-size:17px;font-weight:500;letter-spacing:-.2px}
+.pos{color:var(--pos)} .neg{color:var(--neg)} .muted{color:var(--text2)}
+.brand{color:var(--brand)}
+.mark{display:block}
+.div{height:1px;background:var(--divider);margin-left:var(--pad)}
+.statrow{padding:12px var(--pad)}
+.statrow .line{display:flex;justify-content:space-between;font-size:17px;font-weight:500;letter-spacing:-.2px}
+.bar{height:3px;border-radius:100px;background:var(--divider);margin-top:8px;overflow:hidden}
+.bar i{display:block;height:3px;background:var(--brand);border-radius:100px;
+  transition:width .45s cubic-bezier(.2,.8,.2,1)}
+.btn{width:100%;border:0;border-radius:100px;padding:16px;font-size:15px;font-weight:500;
+  background:var(--chipSel);color:var(--chipSelText);cursor:pointer;font-family:inherit}
+.btn[disabled]{background:var(--chip);color:var(--text2);cursor:default}
+.btn2{border:0;border-radius:100px;padding:12px 18px;background:var(--chip);
+  color:var(--text);font-weight:500;font-size:15px;cursor:pointer;font-family:inherit}
+.fabwrap{position:absolute;left:0;right:0;bottom:60px;padding:28px var(--pad) 16px;
+  background:linear-gradient(to bottom,transparent,var(--bg) 45%,var(--bg))}
+.tabs{display:flex;border-top:1px solid var(--divider);background:var(--bg)}
+.tab{flex:1;border:0;background:none;padding:10px 0 12px;color:var(--text2);
+  cursor:pointer;font-family:inherit;display:flex;flex-direction:column;
+  align-items:center;gap:4px;font-size:11px;position:relative}
+.tab.on{color:var(--text)}
+.tab svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.6}
+.dot{position:absolute;top:8px;right:calc(50% - 16px);width:7px;height:7px;
+  border-radius:50%;background:var(--brand)}
+.sheet-bg{position:absolute;inset:0;background:rgba(0,0,0,.5);opacity:0;
+  pointer-events:none;transition:opacity .22s}
+.sheet-bg.on{opacity:1;pointer-events:auto}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--bg);
+  border-radius:20px 20px 0 0;max-height:88%;overflow-y:auto;
+  transform:translateY(100%);transition:transform .28s cubic-bezier(.2,.8,.2,1);
+  padding-bottom:24px}
+.sheet.on{transform:translateY(0)}
+.sheet-head{display:flex;justify-content:space-between;align-items:center;padding:var(--pad)}
+.sheet-head b{font-size:22px;font-weight:600;letter-spacing:-.4px}
+.sheet-head span{color:var(--text2);cursor:pointer}
+.field{margin:0 var(--pad) 12px}
+.field label{display:block;font-size:12px;color:var(--text2);margin-bottom:6px}
+.field input{width:100%;border:1px solid transparent;background:var(--chip);color:var(--text);
+  border-radius:14px;padding:14px 16px;font-size:16px;font-family:inherit;outline:none}
+.field input:focus{border-color:var(--brand)}
+.danger{display:block;width:100%;text-align:center;color:var(--neg);background:none;
+  border:0;padding:14px;font-weight:500;cursor:pointer;font-family:inherit;font-size:15px}
+.ghost{display:block;width:100%;text-align:center;color:var(--text2);background:none;
+  border:0;padding:14px;cursor:pointer;font-family:inherit;font-size:15px}
+
+/* Notificación del sistema simulada */
+.notif{position:absolute;left:10px;right:10px;top:10px;background:var(--surface);
+  border:1px solid var(--divider);border-radius:22px;padding:14px 16px;z-index:30;
+  transform:translateY(-140%);transition:transform .32s cubic-bezier(.2,.9,.25,1);
+  box-shadow:0 12px 34px rgba(0,0,0,.35)}
+.notif.on{transform:translateY(0)}
+.notif .app{font-size:11px;color:var(--text2);letter-spacing:.4px;margin-bottom:6px;
+  display:flex;align-items:center;gap:6px}
+.notif .nt{font-size:15px;font-weight:600;letter-spacing:-.2px}
+.notif .nb{font-size:13px;color:var(--text2);margin-top:2px}
+.notif .acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.notif .acts button{border:0;background:var(--chip);color:var(--text);border-radius:100px;
+  padding:8px 14px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit}
+.notif .acts button.primary{background:var(--chipSel);color:var(--chipSelText)}
+/* Pantalla de inicio con widgets */
+.home{height:100%;padding:28px 16px;box-sizing:border-box;background:
+  radial-gradient(120% 80% at 20% 0%, #2b3a4a 0%, #101418 55%, #05070a 100%)}
+[data-theme="light"] .home{background:
+  radial-gradient(120% 80% at 20% 0%, #cfe0f2 0%, #eef2f7 55%, #f7f9fc 100%)}
+.wgrid{display:flex;gap:12px;align-items:stretch}
+.w-balance{flex:1;background:var(--bg);border-radius:24px;padding:16px}
+.w-balance .wg{font-size:13px;color:var(--text2);font-weight:500}
+.w-balance .wa{font-size:28px;font-weight:700;letter-spacing:-1px;margin-top:6px}
+.w-balance .wl{font-size:12px;color:var(--text2)}
+.w-balance .wr{display:flex;gap:8px;margin-top:12px}
+.w-balance .wr button{border:0;background:var(--chip);border-radius:100px;padding:8px 12px;
+  font-size:13px;font-weight:500;color:var(--text);cursor:pointer;font-family:inherit}
+.w-add{width:96px;background:var(--chipSel);color:var(--chipSelText);border-radius:24px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  cursor:pointer;border:0;font-family:inherit}
+.w-add .plus{font-size:34px;font-weight:700;line-height:1}
+.w-add .lbl2{font-size:13px;font-weight:500}
+.homebar{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:center;padding:18px}
+.homebar button{border:0;background:var(--chip);color:var(--text);border-radius:100px;
+  padding:12px 18px;font-weight:500;cursor:pointer;font-family:inherit;font-size:15px}
+.toast{position:absolute;left:20px;right:20px;bottom:96px;background:var(--chipSel);
+  color:var(--chipSelText);padding:14px 18px;border-radius:14px;font-size:15px;
+  opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none}
+.toast.on{opacity:1;transform:none}
+.empty{padding:40px var(--pad) 0}
+.empty h2{font-size:22px;font-weight:600;letter-spacing:-.4px;margin:0 0 8px}
+.empty p{color:var(--text2);margin:0 0 24px}
+
+/* Pantalla de carga: 1 s, la misma animación que el splash de Android */
+#splash{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;
+  justify-content:center;z-index:100;transition:opacity .22s}
+#splash.out{opacity:0;pointer-events:none}
+</style></head><body>
+<div id="splash"><svg id="splash-svg" viewBox="0 0 108 108" width="132" height="132"></svg></div>
+<div id="app"></div>
+<script>
+// ---------------------------------------------------------------------------
+// Datos simulados + la misma lógica de Stats.kt
+// ---------------------------------------------------------------------------
+const M = [
+  {uuid:'u-ana', name:'Ana'}, {uuid:'u-ben', name:'Ben'},
+  {uuid:'u-cid', name:'Cid'}, {uuid:'u-dee', name:'Dee'}
+];
+const CATS = [
+  ['GROCERIES','🛒','Compra'],['FOOD_AND_DRINK','🍔','Restaurantes'],
+  ['RENT_AND_UTILITIES','🏠','Vivienda'],['TRANSPORT','🚕','Transporte'],
+  ['ENTERTAINMENT','🎤','Ocio'],['TRAVEL','🛏','Alojamiento'],['OTHER','✋','Otros']
+];
+const catOf = c => CATS.find(x=>x[0]===c);
+let nextId = 100;
+// Reparte sin perder céntimos: el resto se distribuye entre los primeros.
+function splitEvenly(total,n){
+  const cents=Math.round(Math.abs(total)*100), base=Math.floor(cents/n), extra=cents%n;
+  return Array.from({length:n},(_,i)=>(base+(i<extra?1:0))/100);
+}
+const mk = (desc,amt,owner,split,cat,date,type='NORMAL')=>({
+  id:nextId++, uuid:'tx-'+(nextId), description:desc,
+  amount:{value:(type==='NORMAL'?-amt:amt).toFixed(2),currency:'EUR'},
+  ownerUuid:owner, date:date, status:'ACTIVE', type:type, category:cat,
+  allocations:split.map((u,i)=>({membershipUuid:u,
+    amount:{value:((type==='NORMAL'?-1:1)*splitEvenly(amt,split.length)[i]).toFixed(2),currency:'EUR'}}))
+});
+const ALL=['u-ana','u-ben','u-cid','u-dee'];
+const G = [
+ {id:7,title:'Piso Salamanca',emoji:'🏠',currency:'EUR',status:'READ_WRITE',
+  activeMembershipUuid:'u-ana',members:M,transactions:[
+   mk('Alquiler septiembre',900,'u-ana',ALL,'RENT_AND_UTILITIES','2026-09-01 09:12:00'),
+   mk('Compra semanal',86.40,'u-ben',ALL,'GROCERIES','2026-09-03 19:40:00'),
+   mk('Luz agosto',124.15,'u-ana',ALL,'RENT_AND_UTILITIES','2026-08-28 11:02:00'),
+   mk('Cena tailandés',68.00,'u-cid',['u-ana','u-cid','u-dee'],'FOOD_AND_DRINK','2026-08-22 22:10:00'),
+   mk('Internet agosto',39.90,'u-dee',ALL,'RENT_AND_UTILITIES','2026-08-05 10:00:00'),
+   mk('Compra Mercadona',52.30,'u-ana',ALL,'GROCERIES','2026-08-02 18:20:00'),
+  ]},
+ {id:8,title:'Viaje Lisboa',emoji:'✈️',currency:'EUR',status:'READ_WRITE',
+  activeMembershipUuid:'u-ana',members:M.slice(0,3),transactions:[
+   mk('Hotel 3 noches',330,'u-ana',['u-ana','u-ben','u-cid'],'TRAVEL','2026-07-18 15:00:00'),
+   mk('Vuelos',285.60,'u-ben',['u-ana','u-ben','u-cid'],'TRANSPORT','2026-07-02 08:30:00'),
+   mk('Cena Time Out',74.20,'u-cid',['u-ana','u-ben','u-cid'],'FOOD_AND_DRINK','2026-07-19 21:45:00'),
+  ]}
+];
+// Etiquetas de los tipos que reconoce el parser
+const KIND_LABEL = {
+  BIZUM_RECEIVED:'Bizum recibido', BIZUM_SENT:'Bizum enviado',
+  TRANSFER_RECEIVED:'Transferencia recibida', TRANSFER_SENT:'Transferencia enviada',
+  CARD_SPEND:'Pago con tarjeta', CARD_ADJUSTMENT:'Pago ajustado',
+  DIRECT_DEBIT:'Recibo domiciliado', REFUND:'Devolución',
+  JOINT_SPEND:'Gasto en cuenta conjunta', JOINT_WITHDRAWAL:'Retirada de cuenta conjunta',
+  JOINT_INCOME:'Ingreso en cuenta conjunta',
+  INCOME_OTHER:'Ingreso', SPEND_OTHER:'Cargo', UNKNOWN:'Movimiento'
+};
+const MONEY_IN = new Set(['BIZUM_RECEIVED','TRANSFER_RECEIVED','REFUND','JOINT_INCOME','INCOME_OTHER']);
+// Movimientos con la forma exacta de las notificaciones reales
+let INBOX = [
+ {id:1,detectedAt:Date.parse('2026-09-05T20:14:00'),bankLabel:'Trade Republic',
+  rawTitle:'Transfer received',
+  rawText:'Ben Torres sent you a Bizum of 25.00 €.',
+  amount:25,currency:'EUR',counterparty:'Ben Torres',merchant:null,concept:null,
+  kind:'BIZUM_RECEIVED'},
+ {id:2,detectedAt:Date.parse('2026-09-05T13:02:00'),bankLabel:'Trade Republic',
+  rawTitle:'Lefties',rawText:'Spent €70.94 at Lefties',
+  amount:70.94,currency:'EUR',counterparty:'Lefties',merchant:'Lefties',concept:null,
+  kind:'CARD_SPEND'},
+ {id:3,detectedAt:Date.parse('2026-09-04T09:40:00'),bankLabel:'Revolut',
+  rawTitle:'Cuenta Conjunta · Amazon',
+  rawText:'Cid ha gastado 75,91 €\nSaldo de EUR: 920,43 €',
+  amount:75.91,currency:'EUR',counterparty:'Cid',merchant:'Amazon',concept:null,
+  kind:'JOINT_SPEND'},
+ {id:4,detectedAt:Date.parse('2026-09-03T14:30:00'),bankLabel:'BBVA',
+  rawTitle:'Recibo cargado',
+  rawText:'Se ha cargado en tu cuenta *2492 un adeudo de Simyo de 2,50 EUR.',
+  amount:2.5,currency:'EUR',counterparty:'Simyo',merchant:null,concept:null,
+  kind:'DIRECT_DEBIT',confidence:'HIGH'},
+ // Ninguna regla concreta encaja: se deduce la dirección y se marca "revisar"
+ {id:5,detectedAt:Date.parse('2026-09-03T09:05:00'),bankLabel:'Revolut',
+  rawTitle:'Suscripción',rawText:'Se ha renovado tu suscripción por 3,99 €',
+  amount:3.99,currency:'EUR',counterparty:'Suscripción',merchant:'Suscripción',
+  concept:null,kind:'SPEND_OTHER',confidence:'LOW'}
+];
+
+const r2 = v => Math.round(v*100)/100;
+const abs = a => Math.abs(parseFloat(a.value));
+const nameOf = (g,u) => (g.members.find(m=>m.uuid===u)||{}).name || '?';
+const active = g => g.transactions.filter(t=>t.status==='ACTIVE');
+
+function balances(g){
+  const b={}; g.members.forEach(m=>b[m.name]=0);
+  active(g).forEach(tx=>{
+    const p=nameOf(g,tx.ownerUuid); b[p]=(b[p]||0)+abs(tx.amount);
+    tx.allocations.forEach(a=>{const n=nameOf(g,a.membershipUuid); b[n]=(b[n]||0)-abs(a.amount);});
+  });
+  Object.keys(b).forEach(k=>b[k]=r2(b[k])); return b;
+}
+function settlement(g){
+  const b=balances(g);
+  const cred=Object.entries(b).filter(([,v])=>v>0.005).sort((a,x)=>x[1]-a[1]);
+  const deb=Object.entries(b).filter(([,v])=>v<-0.005).map(([k,v])=>[k,-v]).sort((a,x)=>x[1]-a[1]);
+  const legs=[]; let i=0,j=0,cl=cred[0]?cred[0][1]:0,dl=deb[0]?deb[0][1]:0;
+  while(i<cred.length&&j<deb.length){
+    const pay=Math.min(cl,dl);
+    if(pay>0.005) legs.push({from:deb[j][0],to:cred[i][0],amount:r2(pay)});
+    cl-=pay; dl-=pay;
+    if(cl<=0.005){i++;cl=cred[i]?cred[i][1]:0}
+    if(dl<=0.005){j++;dl=deb[j]?deb[j][1]:0}
+  }
+  return legs;
+}
+const totalSpent = g => r2(active(g).filter(t=>t.type==='NORMAL').reduce((s,t)=>s+abs(t.amount),0));
+const myShare = g => r2(active(g).filter(t=>t.type==='NORMAL')
+  .reduce((s,t)=>s+t.allocations.filter(a=>a.membershipUuid===g.activeMembershipUuid)
+  .reduce((x,a)=>x+abs(a.amount),0),0));
+const avgTx = g => {const t=active(g).filter(x=>x.type==='NORMAL');
+  return t.length? r2(t.reduce((s,x)=>s+abs(x.amount),0)/t.length):0;};
+function group(g,keyFn){
+  const m={}; active(g).filter(t=>t.type==='NORMAL').forEach(t=>{
+    const k=keyFn(t); m[k]=(m[k]||0)+abs(t.amount);});
+  return Object.entries(m).map(([k,v])=>[k,r2(v)]).sort((a,b)=>b[1]-a[1]);
+}
+const byCategory = g => group(g,t=>{const c=catOf(t.category);return c?c[1]+' '+c[2]:'✋ Otros';});
+const byPayer = g => group(g,t=>nameOf(g,t.ownerUuid));
+const MONTHS=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const shortDate = raw => {const [y,m,d]=raw.slice(0,10).split('-');
+  return `${+d} ${MONTHS[+m-1]}` + (+y===2026?'':' '+y);};
+const byMonth = g => group(g,t=>{const [y,m]=t.date.split('-');return MONTHS[+m-1]+' '+y;});
+
+const MARK_BAR="M26.50,49.50 H81.50 A4.50,4.50 0 0 1 86.00,54.00 V54.00 A4.50,4.50 0 0 1 81.50,58.50 H26.50 A4.50,4.50 0 0 1 22.00,54.00 V54.00 A4.50,4.50 0 0 1 26.50,49.50 Z";
+const MARK_STEM="M38.50,31.50 H38.50 A4.50,4.50 0 0 1 43.00,36.00 V72.00 A4.50,4.50 0 0 1 38.50,76.50 H38.50 A4.50,4.50 0 0 1 34.00,72.00 V36.00 A4.50,4.50 0 0 1 38.50,31.50 Z";
+const MARK_DUP="M64.70,38.50 a6.30,6.30 0 1 0 12.60,0 a6.30,6.30 0 1 0 -12.60,0 Z";
+const MARK_DDN="M64.70,69.50 a6.30,6.30 0 1 0 12.60,0 a6.30,6.30 0 1 0 -12.60,0 Z";
+// La marca con los colores del tema: app e icono son la misma geometría.
+const mark = (size=40)=>`<svg class="mark" viewBox="0 0 108 108" width="${size}" height="${size}">
+  <path d="${MARK_BAR}" fill="var(--text)"/><path d="${MARK_STEM}" fill="var(--text)"/>
+  <path d="${MARK_DUP}" fill="var(--brand)"/><path d="${MARK_DDN}" fill="var(--brand)"/></svg>`;
+// --- Reglas de aviso: por tipo de movimiento y por origen silenciado ---
+const POLICIES = ['Avisar','Solo bandeja','Ignorar'];
+const CONFIGURABLE = ['BIZUM_RECEIVED','BIZUM_SENT','TRANSFER_RECEIVED','TRANSFER_SENT',
+  'CARD_SPEND','CARD_ADJUSTMENT','DIRECT_DEBIT','REFUND','JOINT_SPEND',
+  'JOINT_WITHDRAWAL','JOINT_INCOME','INCOME_OTHER','SPEND_OTHER'];
+const DEFAULT_POLICY = k =>
+  ['DIRECT_DEBIT','INCOME_OTHER','SPEND_OTHER'].includes(k) ? 'Solo bandeja' : 'Avisar';
+const policyFor = k => S.policies[k] || DEFAULT_POLICY(k);
+const normSource = s0 => (s0||'').normalize('NFD').replace(/\p{Mn}+/gu,'')
+  .toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+const isMuted = (...src) => src.filter(Boolean).some(x=>S.muted.includes(normSource(x)));
+const decide = e => isMuted(e.merchant, e.counterparty) ? 'Ignorar' : policyFor(e.kind);
+// La bandeja solo enseña lo que no está ignorado
+const visibleInbox = () => INBOX.filter(e => decide(e) !== 'Ignorar');
+
+const eur = (v,signed)=> (signed&&v>0?'+':'') + v.toFixed(2).replace('.',',') + ' €';
+const initials = n => n.trim().split(' ').filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join('')||'?';
+
+// ---------------------------------------------------------------------------
+// Estado de la UI
+// ---------------------------------------------------------------------------
+const S = {tab:'groups', gid:7, inner:0, statTab:0, sheet:null, editing:null, toast:null, ownName:'', policies:{}, muted:[],
+           notifAccess:false, form:{}, learn:false,
+           banks:['com.bbva.bbvacontigo','es.bancosantander.apps','es.lacaixa.mobile.android.newwapicon']};
+const BANKLBL={'com.bbva.bbvacontigo':'BBVA','es.bancosantander.apps':'Santander',
+  'es.lacaixa.mobile.android.newwapicon':'CaixaBank'};
+const g = () => G.find(x=>x.id===S.gid);
+
+const ICONS={
+ groups:'<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 19c0-3.3 2.9-5.2 6.5-5.2s6.5 1.9 6.5 5.2"/><circle cx="17.5" cy="9" r="2.4"/><path d="M17 13.6c2.6 0 4.5 1.5 4.5 4"/></svg>',
+ stats:'<svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+ inbox:'<svg viewBox="0 0 24 24"><path d="M3 13h4l1.5 3h7L17 13h4"/><path d="M3 13l2.5-8h13L21 13v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+ settings:'<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>'
+};
+const TABS=[['groups','Grupos'],['stats','Estadísticas'],['inbox','Bandeja'],['settings','Ajustes']];
+
+function row(o){
+  return `<div class="row" ${o.onclick?`onclick="${o.onclick}"`:''}>
+    ${o.lead?`<div class="av">${o.lead}</div>`:''}
+    <div class="mid"><div class="t">${o.title}</div>${o.sub?`<div class="s">${o.sub}</div>`:''}</div>
+    ${o.value!=null?`<div class="v ${o.cls||''}">${o.value}</div>`:''}
+  </div><div class="div"></div>`;
+}
+const pills = (items,sel,fn)=>`<div class="pills">${items.map((t,i)=>
+  `<button class="pill ${sel(i)?'on':''}" onclick="${fn}(${i})">${t}</button>`).join('')}</div>`;
+
+// ---------------------------------------------------------------------------
+// Pantallas
+// ---------------------------------------------------------------------------
+function screenGroups(){
+  const G0=g();
+  if(!G0) return `<div class="empty">${mark(56)}<div style="height:24px"></div><h2>Sin grupos todavía</h2>
+    <p>Abre Tricount, copia el enlace para compartir de un grupo y pégalo aquí.</p>
+    <button class="btn" onclick="openSheet('link')">Pegar enlace</button></div>`;
+  const b=balances(G0), mine=b[nameOf(G0,G0.activeMembershipUuid)]||0;
+  let h=`<div class="title-row"><h1>Grupos</h1>
+    <button class="btn2" onclick="openSheet('link')">Añadir</button></div>
+    <div class="pills">${G.map(x=>`<button class="pill ${x.id===S.gid?'on':''}"
+      onclick="selGroup(${x.id})">${x.emoji} ${x.title}</button>`).join('')}</div>
+    <div style="height:20px"></div>
+    <div class="hero"><div class="num ${mine<0?'neg':'pos'}">${eur(mine,true)}</div>
+      <div class="lbl">${mine>=0?'Te deben en ':'Debes en '}${G0.title}</div></div>
+    <div class="sub" style="margin-top:6px">Total del grupo ${eur(totalSpent(G0))} · ${active(G0).length} movimientos</div>
+    <div style="height:20px"></div>
+    ${pills(['Movimientos','Balance'],i=>S.inner===i,'setInner')}
+    <div style="height:8px"></div>`;
+  if(S.inner===0){
+    const txs=[...active(G0)].sort((a,b)=>b.date.localeCompare(a.date));
+    h+=txs.map(tx=>{const c=catOf(tx.category);
+      return row({lead:c?c[1]:'•',title:tx.description||'Sin descripción',
+        sub:`${nameOf(G0,tx.ownerUuid)} · ${shortDate(tx.date)}`,
+        value:eur(abs(tx.amount)),onclick:`openEdit(${tx.id})`});}).join('');
+  }else{
+    h+=`<div class="section">Saldo por persona</div>`;
+    h+=Object.entries(b).sort((a,x)=>x[1]-a[1]).map(([n,v])=>row({
+      lead:initials(n),title:n,
+      sub:v>0.005?'Le deben':(v<-0.005?'Debe':'En paz'),
+      value:eur(v,true),cls:v>0.005?'pos':(v<-0.005?'neg':'muted')})).join('');
+    const legs=settlement(G0);
+    if(legs.length){h+=`<div class="section">Para saldar cuentas</div>`+
+      legs.map(l=>row({lead:initials(l.from),title:`${l.from} → ${l.to}`,
+        sub:'Un solo pago',value:eur(l.amount)})).join('');}
+  }
+  return h;
+}
+function screenStats(){
+  const G0=g(); if(!G0) return `<div class="empty"><h2>Elige un grupo</h2></div>`;
+  const rows=[byCategory,byPayer,byMonth][S.statTab](G0);
+  const max=Math.max(...rows.map(r=>r[1]),1);
+  return `<div class="title-row"><h1>Estadísticas</h1></div>
+   <div class="hero"><div class="num">${eur(totalSpent(G0))}</div>
+     <div class="lbl">Total gastado en ${G0.title}</div></div>
+   <div class="sub" style="margin-top:6px">Tu parte ${eur(myShare(G0))} · media ${eur(avgTx(G0))} por gasto</div>
+   <div style="height:20px"></div>
+   ${pills(['Categoría','Persona','Mes'],i=>S.statTab===i,'setStatTab')}
+   <div style="height:12px"></div>
+   ${rows.map(([l,v])=>`<div class="statrow"><div class="line"><span>${l}</span>
+     <span>${eur(v)}</span></div><div class="bar"><i style="width:${v/max*100}%"></i></div></div>`).join('')}`;
+}
+function screenInbox(){
+  let h=`<div class="title-row"><h1>Bandeja</h1></div>`;
+  if(!S.notifAccess){
+    h+=`<div style="padding:0 20px">
+      <div style="font-size:17px;font-weight:500">Falta el acceso a notificaciones</div>
+      <div class="s" style="color:var(--text2);margin:6px 0 16px">Sin ese permiso SmartCount no
+      puede ver tus movimientos. Solo se leen las apps de banco que elijas y nada sale del móvil.</div>
+      <button class="btn" onclick="grantNotif()">Conceder permiso</button></div>
+      <div style="height:28px"></div>`;
+  }
+  const shown=visibleInbox();
+  if(!shown.length) return h+`<div class="empty"><h2>Nada pendiente</h2>
+    <p>Los Bizum y transferencias que detectemos aparecerán aquí para que los asignes a un grupo.</p></div>`;
+  h+=`<div class="hero"><div class="num">${shown.length}</div>
+    <div class="lbl">movimiento${shown.length===1?'':'s'} por asignar</div></div><div style="height:12px"></div>`;
+  h+=shown.map(e=>{const rec=MONEY_IN.has(e.kind);
+    const d=new Date(e.detectedAt);
+    return row({lead:initials(e.merchant||e.counterparty||e.bankLabel),
+      title:e.merchant||e.counterparty||e.concept||e.rawTitle,
+      sub:`${KIND_LABEL[e.kind]}${e.confidence==='LOW'?' · revisar':''} · ${d.getDate()} sep · ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,
+      value:eur(rec?e.amount:-e.amount,true),cls:rec?'pos':'neg',
+      onclick:`openAssign(${e.id})`});}).join('');
+  return h;
+}
+function screenSettings(){
+  return `<div class="title-row"><h1>Ajustes</h1></div>
+   <div class="section">Detección</div>
+   ${row({title:'Acceso a notificaciones',sub:S.notifAccess?'Concedido':'Sin conceder',
+     value:S.notifAccess?'✓':'→',cls:S.notifAccess?'brand':'muted',onclick:'grantNotif()'})}
+   ${row({title:'Tu nombre en el banco',
+     sub:S.ownName||'Sin definir · los movimientos entre tus cuentas llegarán a la bandeja',
+     value:S.ownName?'Cambiar':'→',cls:'muted',onclick:'editOwnName()'})}
+   ${row({title:'Modo aprendizaje',sub:'Registra todas las notificaciones para localizar tu banco',
+     value:S.learn?'ON':'OFF',cls:S.learn?'brand':'muted',onclick:'toggleLearn()'})}
+   <div class="section">De qué te avisamos</div>
+   <div class="sub" style="padding-bottom:6px">Toca para alternar entre avisar, dejarlo
+   solo en la bandeja o ignorarlo.</div>
+   ${CONFIGURABLE.map(k=>{const pol=policyFor(k);
+     const cls=pol==='Avisar'?'brand':(pol==='Ignorar'?'neg':'muted');
+     return row({title:KIND_LABEL[k],value:pol,cls:cls,onclick:`cyclePolicy('${k}')`});}).join('')}
+   <div class="section">Silenciados</div>
+   ${S.muted.length? S.muted.map(m=>row({title:m.charAt(0).toUpperCase()+m.slice(1),
+       sub:'No avisa ni llega a la bandeja',value:'Reactivar',cls:'muted',
+       onclick:`unmute('${m}')`})).join('')
+     : `<div class="sub" style="padding-bottom:6px">Nada silenciado. Cuando llegue una
+        suscripción, la propia notificación te deja silenciar ese comercio de un toque.</div>`}
+   <div class="section">Apps vigiladas</div>
+   ${S.banks.map(p=>row({title:BANKLBL[p]||p,sub:p,value:'Quitar',cls:'muted',
+     onclick:`removeBank('${p}')`})).join('')}
+   <div class="section">Widgets y avisos</div>
+   ${row({title:'Ver pantalla de inicio',sub:'Widgets de saldo y de alta rápida',
+     value:'→',cls:'muted',onclick:'setTab(\'home\')'})}
+   ${row({title:'Simular movimiento detectado',sub:'Lanza la notificación con los grupos como botones',
+     value:'→',cls:'muted',onclick:'simulateDetection()'})}
+   <div class="section">Acerca de</div>
+   <div style="display:flex;align-items:center;gap:12px;padding:0 20px 14px">
+     ${mark(34)}<div><div style="font-size:17px;font-weight:500">SmartCount</div>
+     <div style="font-size:13px;color:var(--text2)">Versión 0.1.0</div></div></div>
+   <div class="sub" style="padding-bottom:20px">SmartCount usa la API interna de Tricount, que no es
+   pública ni está documentada. Puede dejar de funcionar tras cualquier actualización y su uso queda
+   fuera de los términos de servicio de Tricount. Uso personal.</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Hojas
+// ---------------------------------------------------------------------------
+function sheetExpense(){
+  const G0=g(), f=S.form, ms=G0.members;
+  const amt=parseFloat((f.amount||'').replace(',','.'));
+  const valid=(f.desc||'').trim() && amt>0 && f.payer && (f.split||[]).length;
+  return `<div class="sheet-head"><b>${S.editing?'Editar gasto':'Nuevo gasto'}</b>
+    <span onclick="closeSheet()">Cancelar</span></div>
+   <div class="field"><label>Importe (EUR)</label>
+     <input id="f-amount" inputmode="decimal" value="${f.amount||''}" oninput="setF('amount',this.value)"></div>
+   <div class="field"><label>Descripción</label>
+     <input id="f-desc" value="${(f.desc||'').replace(/"/g,'&quot;')}" oninput="setF('desc',this.value)"></div>
+   ${amt>0&&(f.split||[]).length?`<div class="sub">${eur(amt/f.split.length)} por persona · ${f.split.length} personas</div>`:''}
+   <div class="section">Pagado por</div>
+   <div class="pills">${ms.map(m=>`<button class="pill ${f.payer===m.uuid?'on':''}"
+     onclick="setF('payer','${m.uuid}')">${m.name}</button>`).join('')}</div>
+   <div class="section">Repartido entre <span style="text-transform:none;cursor:pointer"
+     onclick="toggleAll()">${(f.split||[]).length===ms.length?'Quitar todos':'Seleccionar todos'}</span></div>
+   <div class="pills">${ms.map(m=>`<button class="pill ${(f.split||[]).includes(m.uuid)?'on':''}"
+     onclick="toggleSplit('${m.uuid}')">${m.name}</button>`).join('')}</div>
+   <div class="section">Categoría</div>
+   <div class="pills">${CATS.map(c=>`<button class="pill ${f.cat===c[0]?'on':''}"
+     onclick="setF('cat','${c[0]}')">${c[1]} ${c[2]}</button>`).join('')}</div>
+   <div style="padding:16px 20px 0">
+     <button class="btn" id="save-btn" ${valid?'':'disabled'} onclick="saveExpense()">
+       ${S.editing?'Guardar cambios':'Añadir gasto'}</button>
+     ${S.editing?`<button class="danger" onclick="deleteExpense()">Eliminar gasto</button>`:''}
+   </div>`;
+}
+function sheetAssign(){
+  const e=INBOX.find(x=>x.id===S.assignId); if(!e) return '';
+  const f=S.form, G0=G.find(x=>x.id===f.gid)||G[0], ms=G0.members;
+  const amt=parseFloat((f.amount||'').replace(',','.'));
+  const valid=amt>0 && f.payer && (f.split||[]).length;
+  return `<div class="sheet-head"><b>Asignar movimiento</b><span onclick="closeSheet()">Cancelar</span></div>
+   <div class="sub">${e.rawText}</div><div style="height:20px"></div>
+   <div class="section">Grupo</div>
+   <div class="pills">${G.map(x=>`<button class="pill ${x.id===f.gid?'on':''}"
+     onclick="setF('gid',${x.id})">${x.title}</button>`).join('')}</div>
+   <div class="section">Tipo</div>
+   <div class="pills">
+     <button class="pill ${f.reimb?'on':''}" onclick="setF('reimb',true)">Reembolso</button>
+     <button class="pill ${!f.reimb?'on':''}" onclick="setF('reimb',false)">Gasto repartido</button></div>
+   <div style="height:16px"></div>
+   <div class="field"><label>Importe (EUR)</label>
+     <input id="a-amount" inputmode="decimal" value="${f.amount||''}" oninput="setF('amount',this.value)"></div>
+   <div class="field"><label>Descripción</label>
+     <input id="a-desc" value="${(f.desc||'').replace(/"/g,'&quot;')}" oninput="setF('desc',this.value)"></div>
+   <div class="section">${f.reimb?'Quién paga':'Quién pagó'}</div>
+   <div class="pills">${ms.map(m=>`<button class="pill ${f.payer===m.uuid?'on':''}"
+     onclick="setF('payer','${m.uuid}')">${m.name}</button>`).join('')}</div>
+   <div class="section">${f.reimb?'Quién lo recibe':'Repartido entre'}</div>
+   <div class="pills">${ms.map(m=>`<button class="pill ${(f.split||[]).includes(m.uuid)?'on':''}"
+     onclick="toggleSplit('${m.uuid}')">${m.name}</button>`).join('')}</div>
+   <div style="padding:16px 20px 0">
+     <button class="btn" id="push-btn" ${valid?'':'disabled'} onclick="pushEntry()">Enviar a Tricount</button>
+     <button class="ghost" onclick="ignoreEntry()">Ignorar este movimiento</button>
+     ${(e.merchant||e.counterparty)?`<button class="ghost" id="mute-btn"
+       onclick="muteFromSheet('${(e.merchant||e.counterparty).replace(/'/g,"\\'")}')">
+       No volver a avisar de «${e.merchant||e.counterparty}»</button>`:''}</div>`;
+}
+function sheetOwnName(){
+  return `<div class="sheet-head"><b>Tu nombre en el banco</b><span onclick="closeSheet()">Cancelar</span></div>
+   <div class="sub">Cuando mueves dinero entre tus propias cuentas, el banco te avisa como si
+   alguien te hubiera enviado un Bizum. Con tu nombre aquí, SmartCount reconoce esos
+   movimientos y no te los pone en la bandeja.</div>
+   <div style="height:20px"></div>
+   <div class="field"><label>Nombre y apellidos</label>
+     <input id="f-ownname" value="${(S.form.name||'').replace(/"/g,'&quot;')}"
+       oninput="setF('name',this.value)"></div>
+   <div style="padding:8px 20px 0"><button class="btn" id="save-ownname"
+     onclick="saveOwnName()">Guardar</button></div>`;
+}
+function sheetLink(){
+  return `<div class="sheet-head"><b>Añadir grupo</b><span onclick="closeSheet()">Cancelar</span></div>
+   <div class="sub">En Tricount: abre el grupo → Compartir → Copiar enlace.</div>
+   <div style="height:20px"></div>
+   <div class="field"><label>Enlace de Tricount</label>
+     <input id="f-link" value="${S.form.link||''}" oninput="setF('link',this.value)"
+       placeholder="https://tricount.com/es/…"></div>
+   <div style="padding:8px 20px 0"><button class="btn" ${(S.form.link||'').trim()?'':'disabled'}
+     onclick="addLink()">Añadir</button></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Render + acciones
+// ---------------------------------------------------------------------------
+function render(){
+  const body={groups:screenGroups,stats:screenStats,inbox:screenInbox,settings:screenSettings,home:screenHome}[S.tab]();
+  const showFab = S.tab==='groups' && g();
+  const showTabs = S.tab!=='home';
+  const sheetBody = S.sheet==='expense'?sheetExpense():S.sheet==='assign'?sheetAssign():
+                    S.sheet==='link'?sheetLink():S.sheet==='ownname'?sheetOwnName():'';
+  document.getElementById('app').innerHTML =
+   `<div class="screen ${showFab?"hasfab":""}" id="screen">${body}</div>
+    ${showFab?`<div class="fabwrap"><button class="btn" onclick="openCreate()">Añadir gasto</button></div>`:''}
+    ${showTabs?`<div class="tabs">${TABS.map(([k,l])=>`<button class="tab ${S.tab===k?'on':''}" data-tab="${k}"
+      onclick="setTab('${k}')">${ICONS[k]}<span>${l}</span>
+      ${k==='inbox'&&visibleInbox().length?'<i class="dot"></i>':''}</button>`).join('')}</div>`:''}
+    <div class="sheet-bg ${S.sheet?'on':''}" onclick="closeSheet()"></div>
+    <div class="sheet ${S.sheet?'on':''}" id="sheet">${sheetBody}</div>
+    <div class="toast ${S.toast?'on':''}" id="toast">${S.toast||''}</div>
+    ${renderNotif()}`;
+}
+const setTab=t=>{S.tab=t;render()};
+const selGroup=id=>{S.gid=id;render()};
+const setInner=i=>{S.inner=i;render()};
+const setStatTab=i=>{S.statTab=i;render()};
+const openSheet=s=>{S.sheet=s;S.form={};render()};
+const closeSheet=()=>{S.sheet=null;S.editing=null;render()};
+function toast(m){S.toast=m;render();setTimeout(()=>{S.toast=null;render()},2200)}
+function setF(k,v){S.form[k]=v;render();
+  const el=document.getElementById(k==='amount'?(S.sheet==='assign'?'a-amount':'f-amount'):null);
+  if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length)}}
+function toggleSplit(u){
+  const s=S.form.split||[];
+  if(S.sheet==='assign'&&S.form.reimb){S.form.split=[u]}
+  else S.form.split = s.includes(u)? s.filter(x=>x!==u) : [...s,u];
+  render();}
+function toggleAll(){const ms=g().members.map(m=>m.uuid);
+  S.form.split=(S.form.split||[]).length===ms.length?[]:ms;render();}
+function openCreate(){S.editing=null;S.sheet='expense';
+  S.form={amount:'',desc:'',payer:g().activeMembershipUuid,split:g().members.map(m=>m.uuid),cat:null};render();}
+function openEdit(id){const G0=g();const tx=G0.transactions.find(t=>t.id===id);
+  S.editing=id;S.sheet='expense';
+  S.form={amount:abs(tx.amount).toFixed(2),desc:tx.description,payer:tx.ownerUuid,
+    split:tx.allocations.map(a=>a.membershipUuid),cat:tx.category};render();}
+function saveExpense(){
+  const G0=g(),f=S.form,amt=parseFloat(f.amount.replace(',','.'));
+  if(S.editing){
+    const tx=G0.transactions.find(t=>t.id===S.editing);
+    Object.assign(tx,mk(f.desc,amt,f.payer,f.split,f.cat,tx.date));tx.id=S.editing;
+    toastAfter('Gasto actualizado');
+  }else{
+    G0.transactions.push(mk(f.desc,amt,f.payer,f.split,f.cat,'2026-09-06 12:00:00'));
+    toastAfter('Gasto añadido');
+  }
+}
+function deleteExpense(){const G0=g();
+  G0.transactions=G0.transactions.filter(t=>t.id!==S.editing);toastAfter('Gasto eliminado');}
+function toastAfter(m){S.sheet=null;S.editing=null;render();toast(m);}
+function openAssign(id){const e=INBOX.find(x=>x.id===id);S.assignId=id;S.sheet='assign';
+  const reimb=e.kind.startsWith('BIZUM');
+  S.form={gid:S.gid,reimb:reimb,amount:e.amount.toFixed(2),
+    desc:e.concept||e.merchant||e.counterparty||KIND_LABEL[e.kind],payer:g().activeMembershipUuid,split:[]};render();}
+function pushEntry(){const f=S.form,G0=G.find(x=>x.id===f.gid);
+  const amt=parseFloat(f.amount.replace(',','.'));
+  if(f.reimb){G0.transactions.push(mk(f.desc,amt,f.payer,f.split,null,'2026-09-06 12:00:00','BALANCE'));}
+  else {G0.transactions.push(mk(f.desc,amt,f.payer,f.split,null,'2026-09-06 12:00:00'));}
+  INBOX=INBOX.filter(x=>x.id!==S.assignId);toastAfter('Enviado a «'+G0.title+'»');}
+function ignoreEntry(){INBOX=INBOX.filter(x=>x.id!==S.assignId);toastAfter('Movimiento ignorado');}
+function addLink(){S.sheet=null;render();toast('Grupo añadido');}
+function grantNotif(){S.notifAccess=true;render();toast('Permiso concedido');}
+function toggleLearn(){S.learn=!S.learn;render();}
+function cyclePolicy(k){
+  const cur=policyFor(k); S.policies[k]=POLICIES[(POLICIES.indexOf(cur)+1)%3]; render();}
+function muteSource(src){
+  const n=normSource(src); if(n&&!S.muted.includes(n)) S.muted.push(n);
+  render(); toast(`«${src}» silenciado`);}
+function unmute(n){S.muted=S.muted.filter(x=>x!==n);render();}
+function muteFromSheet(src){S.sheet=null;render();muteSource(src);}
+function notifMute(){const e=S.notif.entry;const src=e.merchant||e.counterparty;
+  S.notif=null;INBOX=INBOX.filter(x=>x.id!==e.id);render();muteSource(src);}
+function editOwnName(){S.sheet='ownname';S.form={name:S.ownName};render();}
+function saveOwnName(){S.ownName=(S.form.name||'').trim();S.sheet=null;render();
+  toast(S.ownName?'Se ignorarán los movimientos entre tus cuentas':'Nombre borrado');}
+function removeBank(p){S.banks=S.banks.filter(x=>x!==p);render();}
+function setTheme(t){document.documentElement.setAttribute('data-theme',t);}
+setTheme(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+render();
+
+// ---- Animación de carga (1 s), idéntica a la de Android ----
+(function splash(){
+  const BAR="M26.50,49.50 H81.50 A4.50,4.50 0 0 1 86.00,54.00 V54.00 A4.50,4.50 0 0 1 81.50,58.50 H26.50 A4.50,4.50 0 0 1 22.00,54.00 V54.00 A4.50,4.50 0 0 1 26.50,49.50 Z";
+  const STEM="M38.50,31.50 H38.50 A4.50,4.50 0 0 1 43.00,36.00 V72.00 A4.50,4.50 0 0 1 38.50,76.50 H38.50 A4.50,4.50 0 0 1 34.00,72.00 V36.00 A4.50,4.50 0 0 1 38.50,31.50 Z";
+  const DUP="M64.70,38.50 a6.30,6.30 0 1 0 12.60,0 a6.30,6.30 0 1 0 -12.60,0 Z";
+  const DDN="M64.70,69.50 a6.30,6.30 0 1 0 12.60,0 a6.30,6.30 0 1 0 -12.60,0 Z";
+  const decQuint=t=>1-Math.pow(1-t,5), decCubic=t=>1-Math.pow(1-t,3);
+  const overshoot=(t,s=2)=>{t-=1;return t*t*((s+1)*t+s)+1;};
+  const cl=v=>Math.max(0,Math.min(1,v));
+  const el=document.getElementById('splash'), svg=document.getElementById('splash-svg');
+  const ink=getComputedStyle(document.documentElement).getPropertyValue('--text').trim()||'#0B0B0D';
+  const accent='#4A6CFF';
+  const t0=performance.now();
+  function tick(now){
+    const ms=now-t0;
+    const bx=decQuint(cl(ms/360));
+    const sy=decQuint(cl((ms-220)/340));
+    const d=overshoot(cl((ms-420)/420));
+    const dSc=0.2+0.8*d, dTy=15.5*(1-d);
+    const a=decCubic(cl(ms/200));
+    svg.innerHTML=`
+      <g transform="translate(54,54) scale(${bx},1) translate(-54,-54)">
+        <path d="${BAR}" fill="${ink}" fill-opacity="${a}"/></g>
+      <g transform="translate(38.5,54) scale(1,${sy}) translate(-38.5,-54)">
+        <path d="${STEM}" fill="${ink}" fill-opacity="${a}"/></g>
+      <g transform="translate(0,${dTy}) translate(71,38.5) scale(${dSc}) translate(-71,-38.5)">
+        <path d="${DUP}" fill="${accent}"/></g>
+      <g transform="translate(0,${-dTy}) translate(71,69.5) scale(${dSc}) translate(-71,-69.5)">
+        <path d="${DDN}" fill="${accent}"/></g>`;
+    if(ms<1000) requestAnimationFrame(tick);
+    else { window.__splashMs = ms; el.classList.add('out'); setTimeout(()=>el.remove(),260); }
+  }
+  requestAnimationFrame(tick);
+})();
+
+// ---- Notificación de movimiento detectado ----
+function candidateGroups(){const sel=G.find(x=>x.id===S.gid);
+  return [sel, ...G.filter(x=>x.id!==S.gid)].filter(Boolean).slice(0,2);}
+function memberByName(g,name){
+  if(!name) return null; const n=name.trim().toLowerCase();
+  return g.members.find(m=>m.name.toLowerCase()===n)
+      || g.members.find(m=>{const a=m.name.toLowerCase();
+           return n.startsWith(a+' ')||a.startsWith(n.split(' ')[0]+' ');}) || null;}
+function planFor(entry,g){
+  const me=g.members.find(m=>m.uuid===g.activeMembershipUuid);
+  const other=memberByName(g,entry.counterparty);
+  const p2p=['BIZUM_RECEIVED','BIZUM_SENT','TRANSFER_RECEIVED','TRANSFER_SENT'].includes(entry.kind);
+  if(p2p&&me&&other&&other.uuid!==me.uuid)
+    return MONEY_IN.has(entry.kind)
+      ? {type:'REIMBURSEMENT',payer:other,receiver:me}
+      : {type:'REIMBURSEMENT',payer:me,receiver:other};
+  return {type:'EXPENSE',payer:me,split:g.members};}
+function simulateDetection(){
+  const e={id:900+Math.floor(Math.random()*90),detectedAt:Date.now(),bankLabel:'Trade Republic',
+    rawTitle:'Transfer received',
+    rawText:'BEN TORRES sent you a Bizum of 18.00 €.',
+    amount:18,currency:'EUR',counterparty:'Ben Torres',merchant:null,concept:null,
+    kind:'BIZUM_RECEIVED'};
+  INBOX=[e,...INBOX]; S.notif={entry:e,state:'offer'}; render();}
+function notifAssign(gid){
+  const e=S.notif.entry, g=G.find(x=>x.id===gid), plan=planFor(e,g);
+  const tx = plan.type==='REIMBURSEMENT'
+    ? mk(e.concept||e.counterparty,e.amount,plan.payer.uuid,[plan.receiver.uuid],null,'2026-09-06 12:00:00','BALANCE')
+    : mk(e.concept||e.counterparty,e.amount,plan.payer.uuid,plan.split.map(m=>m.uuid),null,'2026-09-06 12:00:00');
+  g.transactions.push(tx);
+  INBOX=INBOX.filter(x=>x.id!==e.id);
+  S.notif={entry:e,state:'done',group:g,txId:tx.id,plan:plan.type};render();}
+function notifUndo(){
+  const {entry,group,txId}=S.notif;
+  group.transactions=group.transactions.filter(t=>t.id!==txId);
+  INBOX=[entry,...INBOX]; S.notif={entry:entry,state:'offer'};render();}
+function notifOpen(){const e=S.notif.entry;S.notif=null;S.tab='inbox';render();openAssign(e.id);}
+function notifDismiss(){S.notif=null;render();}
+function renderNotif(){
+  if(!S.notif) return '<div class="notif" id="notif"></div>';
+  const {entry,state}=S.notif;
+  if(state==='done'){
+    return `<div class="notif on" id="notif"><div class="app">${mark(15)}<span>SMARTCOUNT</span></div>
+      <div class="nt">Añadido a «${S.notif.group.title}»</div>
+      <div class="nb">${entry.merchant||entry.counterparty} · ${eur(entry.amount)} · ${S.notif.plan==='REIMBURSEMENT'?'reembolso':'gasto repartido'}</div>
+      <div class="acts"><button id="undo-btn" onclick="notifUndo()">Deshacer</button>
+      <button onclick="notifDismiss()">Cerrar</button></div></div>`;}
+  const gs=candidateGroups();
+  return `<div class="notif on" id="notif"><div class="app">${mark(15)}<span>SMARTCOUNT</span></div>
+    <div class="nt">${KIND_LABEL[entry.kind]} ${eur(entry.amount)} · ${entry.merchant||entry.counterparty}</div>
+    <div class="nb">${entry.concept?'«'+entry.concept+'» · ':''}¿a qué grupo lo llevas?</div>
+    <div class="acts">${gs.map(g=>`<button class="primary" id="notif-g${g.id}"
+      onclick="notifAssign(${g.id})">${g.title}</button>`).join('')}
+      <button onclick="notifOpen()">Elegir…</button>
+      ${(entry.merchant||entry.counterparty)?`<button id="notif-mute" onclick="notifMute()">
+        No avisar de ${entry.merchant||entry.counterparty}</button>`:''}</div></div>`;}
+function screenHome(){
+  const g0=g(), b=balances(g0), mine=b[nameOf(g0,g0.activeMembershipUuid)]||0;
+  return `<div class="home"><div class="wgrid">
+     <div class="w-balance" id="w-balance">
+       <div class="wg">${g0.emoji} ${g0.title}</div>
+       <div class="wa ${mine<0?'neg':'pos'}">${eur(mine,true)}</div>
+       <div class="wl">${mine>=0?'te deben':'debes'}</div>
+       <div class="wr"><button id="w-add-expense" onclick="widgetNewExpense()">+ Gasto</button>
+       <button id="w-inbox" onclick="widgetInbox()"${visibleInbox().length?' style="color:var(--brand)"':''}>Bandeja${visibleInbox().length?' '+visibleInbox().length:''}</button></div>
+     </div>
+     <button class="w-add" id="w-quickadd" onclick="widgetNewExpense()">
+       <span class="plus">+</span><span class="lbl2">Gasto</span></button>
+   </div></div>
+   <div class="homebar"><button onclick="setTab('settings')">Volver a SmartCount</button></div>`;}
+function widgetNewExpense(){S.tab='groups';render();openCreate();}
+function widgetInbox(){S.tab='inbox';render();}
+window.__S=S; window.__G=G; window.__INBOX=()=>INBOX;
+window.__stats={balances,settlement,totalSpent,byCategory};
+</script></body></html>

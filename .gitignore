@@ -1,0 +1,11 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+captures/
+.externalNativeBuild
+.cxx
+node_modules/
+sim/shots/
+sim/__pycache__/

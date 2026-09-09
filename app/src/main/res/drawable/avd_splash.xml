@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Animación de arranque: 1 s exactos, marcados también en el tema. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_splash">
+    <target android:name="bar" android:animation="@animator/splash_bar" />
+    <target android:name="stem" android:animation="@animator/splash_stem" />
+    <target android:name="dotUp" android:animation="@animator/splash_dot_up" />
+    <target android:name="dotDown" android:animation="@animator/splash_dot_down" />
+    <target android:name="barPath" android:animation="@animator/splash_fade" />
+    <target android:name="stemPath" android:animation="@animator/splash_fade" />
+</animated-vector>

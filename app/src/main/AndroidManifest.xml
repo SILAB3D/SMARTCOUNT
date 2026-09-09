@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:name=".SmartCountApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SmartCount">
+
+        <activity
+            android:name=".MainActivity"
+            android:launchMode="singleTask"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.SmartCount.Splash">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="com.silab.smartcount.OPEN_INBOX" />
+                <action android:name="com.silab.smartcount.NEW_EXPENSE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
+            <!-- Permite "compartir" un enlace de Tricount hacia la app -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Escucha de notificaciones bancarias (Bizum, transferencias) -->
+        <service
+            android:name=".notif.BankNotificationListener"
+            android:exported="false"
+            android:label="@string/notif_service_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+
+        <!-- Asignación rápida desde los botones de la notificación -->
+        <receiver
+            android:name=".notif.QuickAssignReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.silab.smartcount.ASSIGN" />
+                <action android:name="com.silab.smartcount.UNDO" />
+                <action android:name="com.silab.smartcount.MUTE" />
+                <action android:name="com.silab.smartcount.UNMUTE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Widgets de pantalla de inicio -->
+        <receiver
+            android:name=".widget.BalanceWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_balance_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_balance_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.QuickAddWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_quickadd_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_quickadd_info" />
+        </receiver>
+
+    </application>
+</manifest>

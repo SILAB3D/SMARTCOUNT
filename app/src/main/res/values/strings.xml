@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SmartCount</string>
+    <string name="notif_service_label">Detección de Bizum y transferencias</string>
+    <string name="widget_balance_desc">Tu saldo en el grupo activo, con accesos a añadir gasto y a la bandeja</string>
+    <string name="widget_quickadd_desc">Añadir un gasto al grupo activo</string>
+    <string name="widget_balance_name">Saldo del grupo</string>
+    <string name="widget_quickadd_name">Añadir gasto</string>
+</resources>

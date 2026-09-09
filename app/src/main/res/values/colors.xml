@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Azul heredado del signo ÷ de Tricount, llevado a un tono más profundo -->
+    <color name="brand">#4A6CFF</color>
+    <color name="splash_background">#FFFFFF</color>
+    <color name="splash_ink">#0B0B0D</color>
+</resources>

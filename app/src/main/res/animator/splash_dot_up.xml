@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 420–840 ms: los dos puntos se separan de la barra y aparece el "÷". -->
+<set xmlns:android="http://schemas.android.com/apk/res/android">
+    <objectAnimator
+        android:propertyName="translateY"
+        android:valueFrom="15.5"
+        android:valueTo="0"
+        android:valueType="floatType"
+        android:startOffset="420"
+        android:duration="420"
+        android:interpolator="@android:interpolator/overshoot" />
+    <objectAnimator
+        android:propertyName="scaleX"
+        android:valueFrom="0.2"
+        android:valueTo="1"
+        android:valueType="floatType"
+        android:startOffset="420"
+        android:duration="420"
+        android:interpolator="@android:interpolator/overshoot" />
+    <objectAnimator
+        android:propertyName="scaleY"
+        android:valueFrom="0.2"
+        android:valueTo="1"
+        android:valueType="floatType"
+        android:startOffset="420"
+        android:duration="420"
+        android:interpolator="@android:interpolator/overshoot" />
+</set>

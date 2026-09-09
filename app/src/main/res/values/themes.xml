@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SmartCount" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- Pantalla de arranque: el icono se dibuja solo durante 1 segundo -->
+    <style name="Theme.SmartCount.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/avd_splash</item>
+        <item name="windowSplashScreenAnimationDuration">1000</item>
+        <item name="postSplashScreenTheme">@style/Theme.SmartCount</item>
+    </style>
+</resources>

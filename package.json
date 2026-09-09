@@ -1,0 +1,12 @@
+{
+  "name": "smartcount-sim",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Comprobaciones automatizadas del prototipo de interfaz de SmartCount",
+  "scripts": {
+    "check:ui": "node sim/run.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}

@@ -1,0 +1,16 @@
+BBVA España	Bizum recibido 💸	Bizum recibido de MARTA NIETO VIDAL por 15,00 EUR	BIZUM_RECEIVED	15.00
+BBVA España	Bizum enviado	Has enviado un Bizum de 8,50 EUR a Sergio Alberto T.T.	BIZUM_SENT	8.50
+BBVA España	Transferencia recibida	Transferencia recibida de HUGO AGUSTIN RUIZ BLANCO de 120,00 EUR	TRANSFER_RECEIVED	120.00
+BBVA España	Transferencia emitida	Transferencia emitida de 45,00 EUR a Bruno G.	TRANSFER_SENT	45.00
+BBVA España	Compra con tarjeta	Compra de 23,40 EUR en MERCADONA con tu tarjeta terminada en 7165	CARD_SPEND	23.40
+BBVA España	Ingreso por transferencia	Ingreso por transferencia de NURIA SANZ de 60,00 EUR	TRANSFER_RECEIVED	60.00
+Trade Republic	Bizum sent	You sent a Bizum of 12.00 € to Marta Nieto	BIZUM_SENT	12.00
+Trade Republic	Transfer sent	You have sent 250.00 € to ALEX RUIZ MORENO	SELF_TRANSFER	250.00
+Trade Republic	Amazon	Refund of €19.99 from Amazon	REFUND	19.99
+Trade Republic	Mercadona	You paid €31.20 at Mercadona	CARD_SPEND	31.20
+Revolut	Bruno G.	Has pagado 6,00 € a Bruno G.	TRANSFER_SENT	6.00
+Revolut	Retirada de efectivo	Has retirado 50 € en un cajero	CARD_SPEND	50.00
+Revolut	Nuria	Te ha enviado 9,90 €	BIZUM_RECEIVED	9.90
+Revolut	Reembolso	Has recibido un reembolso de 14,20 € de Zara	INCOME_OTHER	14.20
+Revolut	Suscripción	Se ha renovado tu suscripción por 3,99 €	SPEND_OTHER	3.99
+Revolut	Cuenta Conjunta · Ikea	Nuria ha gastado 210,00 €\nSaldo de EUR: 700,00 €	JOINT_SPEND	210.00
