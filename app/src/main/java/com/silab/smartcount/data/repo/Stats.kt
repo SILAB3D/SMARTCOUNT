@@ -38,6 +38,25 @@ object Stats {
     }
 
     /**
+     * El balance de un miembro concreto, por uuid.
+     *
+     * Va por uuid y no por nombre porque dos miembros pueden llamarse igual —
+     * y en ese caso el mapa de [balances] los funde en una sola entrada, así
+     * que preguntarle por el nombre devolvería la suma de los dos.
+     */
+    fun balanceOf(t: Tricount, membershipUuid: String?): Double {
+        if (membershipUuid == null) return 0.0
+        var total = 0.0
+        for (tx in t.activeTransactions) {
+            if (tx.ownerUuid == membershipUuid) total += tx.amount.abs
+            total -= tx.allocations
+                .filter { it.membershipUuid == membershipUuid }
+                .sumOf { it.amount.abs }
+        }
+        return r2(total)
+    }
+
+    /**
      * Quién paga a quién para saldar cuentas, minimizando el número de pagos
      * (greedy: se empareja el mayor deudor con el mayor acreedor).
      */

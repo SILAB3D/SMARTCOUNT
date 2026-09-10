@@ -91,17 +91,24 @@ class BalanceWidget : GlanceAppWidget() {
                 maxLines = 1
             )
             Spacer(GlanceModifier.height(6.dp))
+            // En un grupo de ahorro no hay deudas que saldar: la cifra que
+            // importa es lo que queda después de gastar.
+            val headline = g.headline
             Text(
-                money(g.myBalance, g.currency, signed = true),
+                money(headline, g.currency, signed = true),
                 style = TextStyle(
-                    color = if (g.myBalance < 0) neg else pos,
+                    color = if (headline < 0) neg else pos,
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold
                 ),
                 maxLines = 1
             )
             Text(
-                if (g.myBalance >= 0) "te deben" else "debes",
+                when {
+                    g.savings -> "ahorrado"
+                    headline >= 0 -> "te deben"
+                    else -> "debes"
+                },
                 style = TextStyle(color = text2, fontSize = 12.sp)
             )
 

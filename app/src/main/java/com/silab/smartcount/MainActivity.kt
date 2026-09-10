@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BarChart
+import androidx.compose.material.icons.outlined.Savings
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.Tune
@@ -62,6 +63,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silab.smartcount.ui.GroupsScreen
 import com.silab.smartcount.ui.InboxScreen
 import com.silab.smartcount.ui.MainViewModel
+import com.silab.smartcount.ui.SavingsScreen
 import com.silab.smartcount.ui.SettingsScreen
 import com.silab.smartcount.ui.StatsScreen
 import com.silab.smartcount.ui.UpdateSheet
@@ -129,6 +131,7 @@ private const val TOAST_MILLIS = 10_000L
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     GROUPS("Grupos", Icons.Outlined.People),
+    SAVINGS("Ahorro", Icons.Outlined.Savings),
     STATS("Estadísticas", Icons.Outlined.BarChart),
     INBOX("Bandeja", Icons.Outlined.Inbox),
     SETTINGS("Ajustes", Icons.Outlined.Tune)
@@ -226,7 +229,8 @@ fun AppRoot(
             ) { current ->
                 when (current) {
                     Tab.GROUPS -> GroupsScreen(vm, state)
-                    Tab.STATS -> StatsScreen(state)
+                    Tab.SAVINGS -> SavingsScreen(vm, state)
+                    Tab.STATS -> StatsScreen(vm, state)
                     Tab.INBOX -> InboxScreen(vm, state, inbox)
                     Tab.SETTINGS -> SettingsScreen(vm, state, updateVm)
                 }
@@ -234,7 +238,10 @@ fun AppRoot(
 
             BottomTabs(
                 selected = tab,
-                inboxCount = inbox.size,
+                // Desde que la bandeja recoge también lo que no es un
+                // movimiento, contarlo todo llenaría la chapa de avisos
+                // comerciales que nadie va a asignar.
+                inboxCount = inbox.count { it.isBankMovement },
                 onSelect = { tab = it }
             )
         }
@@ -308,7 +315,8 @@ private fun BottomTabs(selected: Tab, inboxCount: Int, onSelect: (Tab) -> Unit) 
                     Text(
                         t.label,
                         color = tint,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
+                        maxLines = 1,
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.bodySmall
                     )

@@ -2,6 +2,7 @@ package com.silab.smartcount.data.cache
 
 import android.content.Context
 import com.silab.smartcount.data.api.Tricount
+import com.silab.smartcount.data.repo.SavingsGroups
 import com.silab.smartcount.data.repo.Stats
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -26,8 +27,15 @@ data class CachedGroup(
     val myBalance: Double = 0.0,
     val total: Double = 0.0,
     val myMembershipUuid: String? = null,
-    val members: List<CachedMember> = emptyList()
+    val members: List<CachedMember> = emptyList(),
+    /** Los grupos de ahorro se leen distinto: ahorrado en vez de deuda. */
+    val savings: Boolean = false,
+    val income: Double = 0.0,
+    val spent: Double = 0.0
 ) {
+    /** La cifra que representa al grupo: lo ahorrado, o lo que te deben. */
+    val headline: Double get() = if (savings) income - spent else myBalance
+
     fun memberByName(name: String?): CachedMember? {
         if (name.isNullOrBlank()) return null
         val needle = name.trim().lowercase()
@@ -53,6 +61,8 @@ data class CacheSnapshot(
 
 class GroupCache(context: Context) {
 
+    private val context = context.applicationContext
+
     private val prefs = context.applicationContext
         .getSharedPreferences("group_cache", Context.MODE_PRIVATE)
 
@@ -71,20 +81,25 @@ class GroupCache(context: Context) {
     }
 
     fun saveGroups(groups: List<Tricount>, selectedId: Int?) = update { old ->
+        val savings = SavingsGroups(context)
         old.copy(
             groups = groups.map { t ->
-                val myName = t.linkedMember?.displayName
+                val isSavings = savings.isSavings(t.id)
+                val summary = if (isSavings) savings.summary(t) else null
                 CachedGroup(
                     id = t.id,
                     title = t.title,
                     emoji = t.emoji,
                     currency = t.currency,
-                    myBalance = myName?.let { Stats.balances(t)[it] } ?: 0.0,
+                    myBalance = Stats.balanceOf(t, t.activeMembershipUuid),
                     total = Stats.totalSpent(t),
                     myMembershipUuid = t.activeMembershipUuid,
                     members = t.members
                         .filter { it.status == "ACTIVE" }
-                        .map { CachedMember(it.uuid, it.displayName) }
+                        .map { CachedMember(it.uuid, it.displayName) },
+                    savings = isSavings,
+                    income = summary?.income ?: 0.0,
+                    spent = summary?.spent ?: 0.0
                 )
             },
             selectedId = selectedId ?: old.selectedId

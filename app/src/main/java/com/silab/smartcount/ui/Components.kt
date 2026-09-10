@@ -256,18 +256,18 @@ fun BrandMark(
         fun p(v: Float) = v * u
         drawRoundRect(
             color = ink,
-            topLeft = Offset(p(22f), p(49.5f)),
-            size = Size(p(64f), p(9f)),
+            topLeft = Offset(p(28f), p(49.5f)),
+            size = Size(p(52f), p(9f)),
             cornerRadius = CornerRadius(p(4.5f))
         )
         drawRoundRect(
             color = ink,
-            topLeft = Offset(p(34f), p(31.5f)),
+            topLeft = Offset(p(37f), p(31.5f)),
             size = Size(p(9f), p(45f)),
             cornerRadius = CornerRadius(p(4.5f))
         )
-        drawCircle(accent, radius = p(6.3f), center = Offset(p(71f), p(38.5f)))
-        drawCircle(accent, radius = p(6.3f), center = Offset(p(71f), p(69.5f)))
+        drawCircle(accent, radius = p(6.3f), center = Offset(p(68f), p(38.5f)))
+        drawCircle(accent, radius = p(6.3f), center = Offset(p(68f), p(69.5f)))
     }
 }
 

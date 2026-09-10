@@ -14,6 +14,7 @@ import com.silab.smartcount.data.db.DetectedKind
 import com.silab.smartcount.data.db.InboxEntry
 import com.silab.smartcount.data.db.InboxStatus
 import com.silab.smartcount.data.repo.Savings
+import com.silab.smartcount.data.repo.SavingsSummary
 import com.silab.smartcount.notif.DetectionNotifier
 import com.silab.smartcount.widget.SmartWidgets
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,11 +32,23 @@ data class UiState(
     val error: String? = null,
     val message: String? = null,
     /** Grupos marcados como grupos de ahorro. La marca es local a este móvil. */
-    val savingsIds: Set<Int> = emptySet()
+    val savingsIds: Set<Int> = emptySet(),
+    /**
+     * Qué grupo hay abierto en cada pestaña que tiene rejilla. Son dos y no uno
+     * porque Grupos y Ahorro se navegan por separado: volver de un grupo de
+     * ahorro tiene que devolverte a la rejilla de ahorro, no a la de grupos.
+     */
+    val openGroupId: Int? = null,
+    val openSavingsId: Int? = null
 ) {
     val selected: Tricount? get() = tricounts.firstOrNull { it.id == selectedId }
 
     fun isSavings(id: Int?): Boolean = id != null && id in savingsIds
+
+    /** Los grupos normales y los de ahorro, que en casi nada se parecen. */
+    val normalGroups: List<Tricount> get() = tricounts.filterNot { isSavings(it.id) }
+
+    val savingsGroups: List<Tricount> get() = tricounts.filter { isSavings(it.id) }
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -45,6 +58,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val dao = appCtx.database.inboxDao()
     private val cache = appCtx.groupCache
     private val savings = appCtx.savingsGroups
+    private val identity = appCtx.memberIdentity
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -56,7 +70,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _focusedEntry = MutableStateFlow<Long?>(null)
     val focusedEntry: StateFlow<Long?> = _focusedEntry.asStateFlow()
 
+    /** Las cifras de un grupo de ahorro, con la fuente de ingresos elegida. */
+    fun savingsSummary(t: Tricount): SavingsSummary = savings.summary(t)
+
+    /** El total de todos los grupos de ahorro juntos. */
+    fun savingsTotal(groups: List<Tricount>): SavingsSummary =
+        groups.fold(SavingsSummary.ZERO) { acc, t -> acc + savings.summary(t) }
+
+    fun incomeMember(t: Tricount): Member? = savings.incomeMember(t)
+
+    /** ¿Este movimiento entra al grupo (verde) o sale de él (rojo)? */
+    fun isIncome(t: Tricount, tx: Transaction): Boolean = savings.isIncome(t, tx)
+
     fun requestNewExpense() { _newExpenseRequests.value += 1 }
+
+    /** La señal es de un solo uso: quien abre la hoja de alta la apaga. */
+    fun consumeNewExpense() { _newExpenseRequests.value = 0 }
     fun focusInboxEntry(id: Long?) { _focusedEntry.value = id }
 
     val inbox: StateFlow<List<InboxEntry>> =
@@ -83,6 +112,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun select(id: Int) {
         _state.value = _state.value.copy(selectedId = id)
         viewModelScope.launch { syncCache(_state.value.tricounts, id) }
+    }
+
+    /** Abre un grupo desde la rejilla de Grupos; null vuelve a la rejilla. */
+    fun openGroup(id: Int?) {
+        _state.value = _state.value.copy(openGroupId = id, selectedId = id ?: _state.value.selectedId)
+        if (id != null) viewModelScope.launch { syncCache(_state.value.tricounts, id) }
+    }
+
+    /** Lo mismo desde la pestaña de Ahorro. */
+    fun openSavings(id: Int?) {
+        _state.value = _state.value.copy(openSavingsId = id, selectedId = id ?: _state.value.selectedId)
+        if (id != null) viewModelScope.launch { syncCache(_state.value.tricounts, id) }
     }
 
     /** Mantiene al día lo que leen el widget y la notificación. */
@@ -171,6 +212,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refreshQuiet()
     }
 
+    /**
+     * Fija quién eres tú en un grupo. Hace falta cuando la API no lo dice —
+     * pasa en los grupos a los que esta instalación se unió por enlace — y sin
+     * ello el balance que se enseña en grande es un 0,00 que no significa nada.
+     */
+    fun setMyMember(tricount: Tricount, member: Member) = launchGuarded {
+        identity.set(tricount.id, member.uuid)
+        _state.value = _state.value.copy(
+            tricounts = _state.value.tricounts.map {
+                if (it.id == tricount.id) it.copy(activeMembershipUuid = member.uuid) else it
+            },
+            message = "Eres «${member.displayName}» en «${tricount.title}»"
+        )
+        syncCache(_state.value.tricounts, _state.value.selectedId)
+    }
+
+    /** Quién es la fuente de ingresos de un grupo de ahorro. */
+    fun setIncomeMember(tricount: Tricount, member: Member) = launchGuarded {
+        savings.setIncomeMember(tricount.id, member.uuid)
+        _state.value = _state.value.copy(
+            savingsIds = savings.ids(),
+            message = "Los ingresos de «${tricount.title}» vienen de «${member.displayName}»"
+        )
+        syncCache(_state.value.tricounts, _state.value.selectedId)
+    }
+
     // -----------------------------------------------------------------------
     // Grupos de ahorro
     // -----------------------------------------------------------------------
@@ -180,7 +247,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * miembro *Ingresos* si no existe: sin él no hay de dónde venga el dinero.
      */
     fun setSavings(tricount: Tricount, enabled: Boolean) = launchGuarded {
-        if (enabled && !Savings.isReady(tricount)) {
+        // Solo se crea el miembro si no hay ninguna fuente de ingresos, ni por
+        // nombre ni elegida a mano: un grupo que ya trae su «Ingreso» en
+        // singular cumple la convención y añadirle otro lo rompería.
+        if (enabled && savings.incomeMember(tricount) == null) {
             client.addMembers(tricount, listOf(Savings.INCOME_MEMBER))
         }
         savings.mark(tricount.id, enabled)
@@ -241,28 +311,82 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         description: String,
         amount: Double,
         category: Category?
+    ) = pushInboxEntry(
+        entry, listOf(TargetGroup(tricount, asReimbursement, payer, receiverOrSplit)),
+        description, amount, category
+    )
+
+    /**
+     * A qué grupo va el movimiento y con qué papeles. Un mismo cargo puede ir a
+     * varios grupos a la vez — el recibo de la luz al piso y al de ahorro — y
+     * cada uno tiene sus miembros, así que el reparto se decide grupo a grupo y
+     * no una vez para todos.
+     */
+    data class TargetGroup(
+        val tricount: Tricount,
+        val asReimbursement: Boolean,
+        val payer: Member,
+        val receiverOrSplit: List<Member>
+    )
+
+    fun pushInboxEntry(
+        entry: InboxEntry,
+        targets: List<TargetGroup>,
+        description: String,
+        amount: Double,
+        category: Category?
     ) = launchGuarded {
-        val remoteId = if (asReimbursement) {
-            val receiver = receiverOrSplit.firstOrNull()
-                ?: throw IllegalArgumentException("Elige quién recibe el dinero")
-            client.createReimbursement(tricount, payer, receiver, amount, description, Date(entry.detectedAt))
-        } else {
-            client.createExpense(
-                tricount, description, amount, payer, receiverOrSplit,
-                category, date = Date(entry.detectedAt)
-            )
+        require(targets.isNotEmpty()) { "Elige al menos un grupo" }
+        var lastId: Int? = null
+        var lastGroup: Tricount? = null
+        targets.forEach { target ->
+            val t = target.tricount
+            lastId = if (target.asReimbursement) {
+                val receiver = target.receiverOrSplit.firstOrNull()
+                    ?: throw IllegalArgumentException("Elige quién recibe el dinero en «${t.title}»")
+                client.createReimbursement(
+                    t, target.payer, receiver, amount, description, Date(entry.detectedAt)
+                )
+            } else {
+                client.createExpense(
+                    t, description, amount, target.payer, target.receiverOrSplit,
+                    category, date = Date(entry.detectedAt)
+                )
+            }
+            lastGroup = t
         }
+        // La entrada guarda el último destino: es lo que "Deshacer" puede
+        // revertir sin ambigüedad. Los demás quedan creados y se corrigen en
+        // su grupo, que es donde se ven.
         dao.update(
             entry.copy(
                 status = InboxStatus.PUSHED,
-                tricountId = tricount.id,
-                remoteTxId = remoteId,
-                amount = amount
+                tricountId = lastGroup?.id,
+                remoteTxId = lastId,
+                amount = amount,
+                userMovement = true
             )
         )
         DetectionNotifier.cancel(appCtx, entry.id)
-        _state.value = _state.value.copy(message = "Enviado a «${tricount.title}»")
+        _state.value = _state.value.copy(
+            message = if (targets.size == 1) {
+                "Enviado a «${lastGroup?.title}»"
+            } else {
+                "Enviado a ${targets.size} grupos"
+            }
+        )
         refreshQuiet()
+    }
+
+    /**
+     * Calibración: marcar una notificación como movimiento bancario o como que
+     * no lo es. No borra nada — solo cambia de grupo en la bandeja, para poder
+     * volver atrás si la decisión fue equivocada.
+     */
+    fun setBankMovement(entry: InboxEntry, isMovement: Boolean) = launchGuarded {
+        dao.update(entry.copy(userMovement = isMovement))
+        cache.savePendingCount(dao.countPending())
+        SmartWidgets.refresh(appCtx)
     }
 
     fun ignoreInboxEntry(entry: InboxEntry) = launchGuarded {

@@ -52,14 +52,15 @@ class NotificationRules(context: Context) {
     private fun keyFor(kind: DetectedKind) = "policy_${kind.name}"
 
     /**
-     * Por defecto avisamos de lo que suele ser compartible y dejamos en la
-     * bandeja lo recurrente o lo que el parser no ha sabido identificar.
+     * Todo movimiento reconocido avisa: la notificación es el sitio donde se
+     * reparte, y un movimiento que solo llega a la bandeja se descubre días
+     * después o no se descubre. Las dos excepciones no son movimientos que
+     * repartir — lo que mueves entre tus propias cuentas no cambia de manos, y
+     * lo que el parser no supo leer no tiene ni importe que ofrecer.
      */
     private fun defaultFor(kind: DetectedKind): MovementPolicy = when (kind) {
-        DetectedKind.DIRECT_DEBIT,
-        DetectedKind.INCOME_OTHER,
-        DetectedKind.SPEND_OTHER -> MovementPolicy.INBOX_ONLY
         DetectedKind.SELF_TRANSFER -> MovementPolicy.IGNORE
+        DetectedKind.UNKNOWN -> MovementPolicy.INBOX_ONLY
         else -> MovementPolicy.NOTIFY
     }
 
@@ -70,7 +71,8 @@ class NotificationRules(context: Context) {
         DetectedKind.CARD_SPEND, DetectedKind.CARD_ADJUSTMENT,
         DetectedKind.DIRECT_DEBIT, DetectedKind.REFUND,
         DetectedKind.JOINT_SPEND, DetectedKind.JOINT_WITHDRAWAL, DetectedKind.JOINT_INCOME,
-        DetectedKind.INCOME_OTHER, DetectedKind.SPEND_OTHER
+        DetectedKind.INCOME_OTHER, DetectedKind.SPEND_OTHER,
+        DetectedKind.SELF_TRANSFER
     )
 
     // -- por origen -------------------------------------------------------

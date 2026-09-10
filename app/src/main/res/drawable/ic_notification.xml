@@ -2,15 +2,16 @@
 <!--
   Silueta de un solo tono, blanco puro sobre transparente, sin fondo:
   es lo que exige Android para el icono pequeño, que luego tiñe él.
-  El glifo se escala para ocupar 22 de los 24 dp.
+  El glifo (52 x 45 en el lienzo de 108) se escala para ocupar 22 de los 24 dp
+  de ancho, centrado en vertical.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <path android:fillColor="#FFFFFF" android:pathData="M2.55,10.45 H21.45 A1.55,1.55 0 0 1 23.00,12.00 V12.00 A1.55,1.55 0 0 1 21.45,13.55 H2.55 A1.55,1.55 0 0 1 1.00,12.00 V12.00 A1.55,1.55 0 0 1 2.55,10.45 Z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M6.67,4.27 H6.67 A1.55,1.55 0 0 1 8.22,5.81 V18.19 A1.55,1.55 0 0 1 6.67,19.73 H6.67 A1.55,1.55 0 0 1 5.12,18.19 V5.81 A1.55,1.55 0 0 1 6.67,4.27 Z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M15.68,6.67 a2.17,2.17 0 1 0 4.33,0 a2.17,2.17 0 1 0 -4.33,0 Z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M15.68,17.33 a2.17,2.17 0 1 0 4.33,0 a2.17,2.17 0 1 0 -4.33,0 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M2.90,10.10 H21.10 A1.90,1.90 0 0 1 23.00,12.00 V12.00 A1.90,1.90 0 0 1 21.10,13.90 H2.90 A1.90,1.90 0 0 1 1.00,12.00 V12.00 A1.90,1.90 0 0 1 2.90,10.10 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M6.71,2.48 H6.71 A1.90,1.90 0 0 1 8.61,4.38 V19.62 A1.90,1.90 0 0 1 6.71,21.52 H6.71 A1.90,1.90 0 0 1 4.81,19.62 V4.38 A1.90,1.90 0 0 1 6.71,2.48 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M15.25,5.44 a2.67,2.67 0 1 0 5.34,0 a2.67,2.67 0 1 0 -5.34,0 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M15.25,18.56 a2.67,2.67 0 1 0 5.34,0 a2.67,2.67 0 1 0 -5.34,0 Z" />
 </vector>

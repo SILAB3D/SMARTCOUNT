@@ -83,12 +83,32 @@ data class InboxEntry(
     val kind: DetectedKind = DetectedKind.UNKNOWN,
     val confidence: Confidence = Confidence.LOW,
     val status: InboxStatus = InboxStatus.PENDING,
+    /**
+     * Calibración a mano: true = "esto sí es un movimiento bancario",
+     * false = "esto no lo es", null = lo que haya decidido el parser.
+     *
+     * Existe porque el parser acierta mucho pero no siempre, y las dos
+     * equivocaciones cuestan distinto: un aviso comercial colado entre los
+     * movimientos se ignora de un toque, pero una nómina que el banco notifica
+     * sin importe se pierde para siempre si la app no ofrece rescatarla. Al
+     * dejar mover cada notificación de un grupo al otro, la bandeja deja de ser
+     * una lista de resultados y pasa a ser el sitio donde se afina el sistema.
+     */
+    val userMovement: Boolean? = null,
     /** Rellenados al enviarlo a Tricount */
     val tricountId: Int? = null,
     val remoteTxId: Int? = null,
     /** Hash para evitar duplicados cuando el banco repite la notificación */
     val dedupeKey: String
-)
+) {
+    /** Lo que dedujo el parser: hay importe y el tipo se reconoció. */
+    val parsedAsMovement: Boolean
+        get() = amount != null && kind != DetectedKind.UNKNOWN
+
+    /** Lo que vale: tu criterio si lo has dado, y si no el del parser. */
+    val isBankMovement: Boolean
+        get() = userMovement ?: parsedAsMovement
+}
 
 @Dao
 interface InboxDao {
@@ -107,7 +127,16 @@ interface InboxDao {
     @Update
     suspend fun update(entry: InboxEntry)
 
-    @Query("SELECT COUNT(*) FROM inbox WHERE status = 'PENDING'")
+    /**
+     * Solo los que son movimientos: desde que la bandeja también recoge las
+     * notificaciones que no lo son, contarlas todas inflaría la chapa con
+     * avisos comerciales que nadie va a asignar.
+     */
+    @Query(
+        "SELECT COUNT(*) FROM inbox WHERE status = 'PENDING' AND (" +
+            "userMovement = 1 OR (userMovement IS NULL AND amount IS NOT NULL AND kind != 'UNKNOWN')" +
+            ")"
+    )
     suspend fun countPending(): Int
 
     @Query("SELECT * FROM inbox WHERE id = :id")
@@ -131,7 +160,7 @@ class Converters {
         runCatching { InboxStatus.valueOf(v) }.getOrDefault(InboxStatus.PENDING)
 }
 
-@Database(entities = [InboxEntry::class], version = 3, exportSchema = false)
+@Database(entities = [InboxEntry::class], version = 4, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun inboxDao(): InboxDao

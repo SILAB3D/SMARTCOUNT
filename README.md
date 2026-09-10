@@ -2,10 +2,11 @@
 
 App Android (Kotlin + Compose) que se conecta a **Tricount** para:
 
-- ver tus grupos, sus movimientos y el balance de cada miembro,
+- ver tus grupos en una rejilla, sus movimientos y el balance de cada miembro,
 - **crear, editar y eliminar gastos** sin abrir Tricount,
+- leer un grupo como **grupo de ahorro**: ingresos, gastos y lo que queda,
 - **detectar automáticamente notificaciones de Bizum y transferencias**, dejarlas en
-  una bandeja de entrada y enviarlas al grupo que elijas (siempre con confirmación).
+  una bandeja de entrada y enviarlas a uno o varios grupos (siempre con confirmación).
 
 ---
 
@@ -65,6 +66,28 @@ Cabeceras en todas las llamadas: `app-id`, `X-Bunq-Client-Request-Id`, `User-Age
 del dispositivo. Si las borras pierdes el acceso a los grupos sincronizados con esa
 instalación: hay que volver a unirse con el enlace público. Ajustes permite exportarlas.
 
+**`membership_uuid_active` llega `null` en los grupos a los que te uniste por
+enlace.** Es el campo que dice cuál de los miembros eres tú, y de él salía el
+balance que la pantalla enseña en grande. Sin él `linkedMember` es `null`, el
+balance se queda en 0,00 y parece que la app no sabe calcularlo — el motivo real
+de que "en algunos grupos no se detecte el balance". Comprobado contra la API:
+un grupo unido por enlace devuelve sus dos miembros con nombre y uuid, y
+`"membership_uuid_active": null`.
+
+No se puede adivinar siempre: en un grupo de cinco personas no hay forma de saber
+cuál eres. `MemberIdentity` lo resuelve en tres pasos, del más fiable al menos:
+
+1. lo que diga la API,
+2. lo que hayas elegido a mano (se guarda solo en este móvil),
+3. una deducción, y **solo cuando es inequívoca**: el miembro que se llama como tú
+   en el banco (Ajustes → *Tu nombre*), o el otro de un grupo de dos donde uno es
+   la fuente de ingresos.
+
+Si ninguno acierta, el grupo lo pregunta en vez de mentir con un cero. La
+resolución se aplica en el cliente, no en cada pantalla: así también la
+aprovechan la caché del widget y la asignación rápida desde la notificación,
+que no pasan por la interfaz.
+
 ## Movimientos: gasto, ingreso y transferencia
 
 La hoja de alta ofrece los tres tipos que entiende Tricount, y cada uno cambia
@@ -84,23 +107,44 @@ no deja guardar si coinciden.
 (el signo del importe y la forma de las asignaciones dependen de él), así que
 cambiar de tipo es borrar y volver a crear, no editar.
 
+## Las pestañas
+
+| Pestaña | Qué es |
+|---|---|
+| **Grupos** | Rejilla de dos columnas con todos los grupos y su cifra. Al tocar uno se abre |
+| **Ahorro** | Solo los grupos de ahorro, con ingresos, gastos y balance de cada uno y del conjunto |
+| **Estadísticas** | Separadas en grupos normales y grupos de ahorro |
+| **Bandeja** | Lo detectado, agrupado en movimientos y no-movimientos |
+| **Ajustes** | Detección, avisos, silenciados, grupos de ahorro y actualizaciones |
+
+La rejilla sustituye a la tira horizontal de chips que había antes: con más de
+tres o cuatro grupos había que desplazarla a ciegas para encontrar el que se
+busca, y no decía nada de cada uno. Cada ficha lleva ya la cifra que define al
+grupo — lo que te deben, o el balance si es de ahorro — que es a lo que se
+entraba.
+
 ## Grupos de ahorro
 
 Un grupo de ahorro **no es un tipo de grupo de Tricount**: es un grupo normal
 leído de otra manera, y la marca vive solo en este móvil. Para Tricount sigue
 siendo un grupo con sus movimientos, así que la app oficial lo abre sin
-enterarse de nada. Cualquier grupo se convierte, y se revierte, desde
-Ajustes → *Grupos de ahorro*.
+enterarse de nada. Se convierte, y se revierte, con el botón **Ahorro** del
+propio grupo o desde Ajustes.
 
 La convención es la que hace el trabajo:
 
-- dos miembros: **tú** y uno llamado **Ingresos**,
-- lo que creas **tú** son los gastos del grupo,
-- lo que crea **Ingresos** hacia ti son los ingresos,
-- el **ahorro** es la resta: ingresos − gastos.
+- una **fuente de ingresos**: un miembro que suele llamarse *Ingresos*,
+- una **fuente de gastos**: tú,
+- lo que sale de la fuente de ingresos son los ingresos,
+- lo demás son los gastos, y el **balance** es la resta.
 
-Al convertir un grupo se añade el miembro *Ingresos* si no existe; sin él no hay
-de dónde venga el dinero.
+Al convertir un grupo se añade el miembro *Ingresos* **solo si no hay ya una
+fuente de ingresos**. Se aceptan varias formas del nombre — *Ingresos*,
+*Ingreso*, *Income*, *Nómina* — porque los grupos reales no respetan la
+convención al pie de la letra: el grupo con el que se probó esto tiene el
+miembro en singular, y exigir el plural exacto lo dejaba fuera y le añadía un
+segundo miembro que no hacía falta. Y cuando el nombre no se parece a ninguna
+de esas formas, la fuente **se elige a mano** desde el propio grupo.
 
 **Se mira el propietario de cada movimiento, no su tipo.** Es lo que distingue
 de qué lado viene el dinero sea cual sea el tipo con el que se creó: un ingreso
@@ -109,12 +153,22 @@ misma cosa para el ahorro, y filtrar por tipo dejaría fuera uno de los dos.
 
 Qué cambia en la pantalla del grupo:
 
-- la cifra grande es **lo ahorrado**, no lo que te deben — en un grupo de ahorro
+- la cifra grande es el **balance**, no lo que te deben — en un grupo de ahorro
   no hay deudas que saldar,
-- debajo, cuánto ha entrado y cuánto ha salido,
+- debajo, **ingresos, gastos y balance** en tres cifras,
+- cada movimiento se pinta según de qué lado viene el dinero: **verde** lo que
+  entra, **rojo** lo que sale. En un grupo normal se quedan en negro, porque
+  allí un gasto no es una mala noticia sino el material del que está hecho el
+  grupo, y pintarlo todo de rojo no informaría de nada,
 - desaparece la pestaña *Balance*, que no significa nada aquí,
 - la hoja de alta se queda en dos botones, *Gasto* e *Ingreso*, y sin selectores
   de miembros: los papeles ya están decididos.
+
+La pestaña **Ahorro** los junta todos: el balance del conjunto arriba, con sus
+ingresos y gastos, y debajo cada grupo con sus tres cifras y una barra que dice
+cuánto de lo ingresado sigue ahí. El total solo se enseña si todos los grupos
+comparten moneda; sumar euros y libras daría una cifra falsa, así que en ese
+caso se dice y se remite a cada grupo.
 
 ## Detección de movimientos
 
@@ -190,6 +244,25 @@ como si alguien te hubiera enviado un Bizum. En Ajustes → *Tu nombre en el ban
 pones tu nombre y esos movimientos dejan de llegar a la bandeja; la comparación
 ignora tildes, mayúsculas y el orden de los apellidos.
 
+### La bandeja calibra el parser
+
+La bandeja enseña **dos grupos**: lo que se ha reconocido como movimiento
+bancario y lo que no. Y cualquiera de los dos se mueve al otro con un toque, con
+esa decisión mandando sobre la del parser a partir de ahí.
+
+Enseñar también lo descartado es lo que convierte la bandeja en el sitio donde
+se afina el sistema y no solo donde se recogen resultados. El parser se equivoca
+en las dos direcciones y las dos equivocaciones no cuestan igual: un aviso
+comercial colado entre los movimientos se aparta de un toque, pero **un
+movimiento descartado por error se perdía sin dejar rastro** — los avisos de
+nómina de BBVA, que llegan sin importe, son el caso de libro. Ahora se rescatan.
+
+Para que haya algo que calibrar, las notificaciones de las apps vigiladas se
+guardan **aunque el parser no las entienda**, no solo en modo aprendizaje. El
+volumen queda acotado porque solo vienen de las apps que has elegido. La chapa
+de la pestaña cuenta únicamente los movimientos: contarlo todo la llenaría de
+avisos comerciales que nadie va a asignar.
+
 - El permiso **Acceso a notificaciones** se concede a mano en los ajustes del sistema.
 - La lista de bancos es una semilla (Revolut, Trade Republic, BBVA, CaixaBank,
   Santander y otros); si el tuyo no aparece o cambió de package, activa **Modo
@@ -259,7 +332,16 @@ Bizum recibido 18,00 € · Ben Torres
 
 - Los dos grupos más probables (el activo primero) van como botones: un toque
   desde la pantalla de bloqueo y listo, sin abrir la app.
-- *Elegir…* abre la app en la bandeja, con la hoja de ese movimiento ya abierta.
+- *Elegir…* abre la app en la bandeja, con la hoja de ese movimiento ya abierta,
+  y allí el movimiento puede ir a **varios grupos a la vez** y con **la persona
+  que elijas** en cada uno. El recibo de la luz va al piso y al grupo de ahorro,
+  y hacerlo dos veces obligaba a repetir importe y descripción a mano. Los
+  miembros de un grupo no son los del otro, así que *quién paga* y *entre
+  quiénes se reparte* se deciden grupo a grupo.
+
+Por defecto **avisa todo movimiento reconocido**. Las dos excepciones no son
+movimientos que repartir: lo que mueves entre tus propias cuentas no cambia de
+manos, y lo que el parser no supo leer no tiene ni importe que ofrecer.
 - *No avisar de X* silencia ese comercio o esa persona para siempre.
 - Tras asignar, la notificación se sustituye por una confirmación con
   **Deshacer** durante 30 segundos, que borra el movimiento en Tricount y
@@ -375,7 +457,12 @@ npm run check:ui              # 116 comprobaciones sobre el prototipo
 - **Decisión de la asignación rápida**: 10 escenarios de `planFor` (Bizum
   enviado/recibido, nombre completo contra nombre de pila, contraparte ajena al
   grupo, Bizum a ti mismo, transferencias).
-- **Icono**: renderizado a 160/96/64/48/36/24 px y la silueta a 48/32/24/18 px,
+- **Icono**: el glifo medía 64 × 45 unidades del lienzo de 108 y se leía como una
+  marca apaisada, sobre todo junto al texto. Se comprimieron las **posiciones**
+  hacia el centro (barra 22..86 → 28..80, asta 38,5 → 41,5, puntos 71 → 68)
+  dejando intactos los grosores y el radio de los puntos: 52 × 45, casi cuadrado,
+  sin adelgazar ningún trazo. Renderizado a 160/96/64/48/36/24 px y la silueta a
+  48/32/24/18 px,
   sobre claro y oscuro, revisando que siga legible; la animación se reprodujo
   fotograma a fotograma con los mismos interpoladores que usan los `animator` XML.
 - **Interfaz**: 116 comprobaciones automatizadas sobre un prototipo navegable
@@ -398,11 +485,13 @@ npm run check:ui              # 116 comprobaciones sobre el prototipo
 data/api/     Modelos, cliente HTTP de la API interna, credenciales cifradas
 data/db/      Room: bandeja de movimientos detectados
 data/repo/    Stats: balances, plan de liquidación, gasto por categoría/mes/persona
+              MemberIdentity: quién eres tú en cada grupo
+              SavingsGroups: qué grupos son de ahorro y de dónde vienen sus ingresos
 data/cache/   Instantánea de grupos para widgets y notificaciones
 notif/        NotificationListenerService, parser de movimientos, registro de bancos,
               reglas de aviso, notificación accionable y receptor de acciones
 widget/       Widgets Glance: saldo del grupo y alta rápida
-ui/           Compose: pestañas, hojas inferiores, componentes y tema
+ui/           Compose: una pantalla por pestaña, hojas inferiores, componentes y tema
 ui/theme/     Tokens de color (incluida la marca) y tipografía, claro y oscuro
 update/       Canal de actualización: consulta de release, descarga e instalación
 branding/     Icono en SVG (color y monocromo)

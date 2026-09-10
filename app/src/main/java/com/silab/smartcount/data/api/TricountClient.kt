@@ -38,7 +38,14 @@ class TricountException(message: String, val code: Int? = null) : Exception(mess
  */
 class TricountClient(
     private val credentials: CredentialStore,
-    private val http: OkHttpClient = defaultHttp()
+    private val http: OkHttpClient = defaultHttp(),
+    /**
+     * Último retoque a cada grupo recién leído. Se usa para rellenar quién eres
+     * tú en el grupo cuando la API no lo dice (ver MemberIdentity). Va aquí, y
+     * no en cada pantalla, para que también lo aprovechen la caché del widget y
+     * la asignación rápida desde la notificación, que no pasan por la interfaz.
+     */
+    private val resolveIdentity: (Tricount) -> Tricount = { it }
 ) {
 
     companion object {
@@ -172,7 +179,7 @@ class TricountClient(
     suspend fun listTricounts(): List<Tricount> = withSession {
         val req = newRequest("$BASE_URL/v1/user/${requireUser()}/registry").get().build()
         execute(req).responseArray().mapNotNull { item ->
-            (item as? JsonObject)?.obj("Registry")?.let(Tricount::parse)
+            (item as? JsonObject)?.obj("Registry")?.let(Tricount::parse)?.let(resolveIdentity)
         }
     }
 
@@ -189,7 +196,7 @@ class TricountClient(
         val req = newRequest(url.toString()).get().build()
         execute(req).responseArray()
             .mapNotNull { (it as? JsonObject)?.obj("Registry") }
-            .firstOrNull()?.let(Tricount::parse)
+            .firstOrNull()?.let(Tricount::parse)?.let(resolveIdentity)
             ?: throw TricountException("No se encontró ningún tricount con ese enlace")
     }
 

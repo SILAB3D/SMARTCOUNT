@@ -47,16 +47,18 @@ class BankNotificationListener : NotificationListenerService() {
         if (title.isNullOrBlank() && text.isNullOrBlank()) return
 
         val parsed = MovementParser.parse(title, text, registry.ownName)
-        // En modo aprendizaje guardamos también lo que no se ha sabido parsear,
-        // para poder afinar reglas y descubrir el paquete del banco.
-        if (parsed == null && !registry.learnMode) return
-        // Mover dinero entre tus propias cuentas no es un gasto compartido.
-        if (parsed?.kind == DetectedKind.SELF_TRANSFER && !registry.learnMode) return
 
-        // Reglas de aviso: por tipo de movimiento y por comercio silenciado.
+        // Lo que no se supo parsear también se guarda, y no solo en modo
+        // aprendizaje: es la mitad que le falta a la bandeja para poder
+        // calibrarse. Sin las notificaciones descartadas a la vista no hay
+        // forma de rescatar la que el parser dejó fuera por error — y los
+        // avisos de nómina de BBVA, que llegan sin importe, son exactamente
+        // ese caso. Al venir solo de las apps vigiladas, el volumen es acotado.
         val policy = parsed?.let {
             rules.decide(it.kind, it.merchant, it.counterparty)
         } ?: MovementPolicy.INBOX_ONLY
+        // "Ignorar" sigue significando ignorar: ni notificación ni bandeja. Es
+        // lo que mantiene fuera los movimientos entre tus propias cuentas.
         if (policy == MovementPolicy.IGNORE && !registry.learnMode) return
 
         val key = dedupeKey(pkg, title, text)
