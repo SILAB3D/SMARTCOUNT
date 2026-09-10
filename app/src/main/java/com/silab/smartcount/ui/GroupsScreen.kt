@@ -39,6 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silab.smartcount.data.api.Category
+import com.silab.smartcount.data.api.SettlementLeg
 import com.silab.smartcount.data.api.Transaction
 import com.silab.smartcount.data.api.Tricount
 import com.silab.smartcount.data.repo.Stats
@@ -345,7 +346,7 @@ fun GroupDetail(
                     SmartDivider()
                 }
             } else {
-                item { BalanceSection(t) }
+                item { BalanceSection(vm, t) }
             }
         }
 
@@ -595,17 +596,29 @@ private fun TransactionRow(
     )
 }
 
+/**
+ * Saldos y liquidación.
+ *
+ * El plan no es solo informativo: cada pago se puede registrar de una vez, y al
+ * hacerlo se crea la transferencia correspondiente. Como el plan sale del
+ * balance, el pago registrado desaparece de la lista él solo.
+ */
 @Composable
-private fun BalanceSection(t: Tricount) {
+private fun BalanceSection(vm: MainViewModel, t: Tricount) {
     val c = SmartTheme.colors
     val balances = remember(t) { Stats.balances(t) }
     val plan = remember(t) { Stats.settlementPlan(t) }
+    val me = t.activeMembershipUuid
+
+    // Lo que hay pendiente de confirmar: un pago suelto o el plan entero.
+    var confirming by remember { mutableStateOf<List<SettlementLeg>>(emptyList()) }
 
     Column {
         SectionHeader("Saldo por persona")
         balances.entries.sortedByDescending { it.value }.forEach { (name, bal) ->
+            val isMe = t.memberByUuid(me)?.displayName == name
             SmartRow(
-                title = name,
+                title = if (isMe) "$name · tú" else name,
                 subtitle = when {
                     bal > 0.005 -> "Le deben"
                     bal < -0.005 -> "Debe"
@@ -622,17 +635,59 @@ private fun BalanceSection(t: Tricount) {
             SmartDivider()
         }
 
-        if (plan.isNotEmpty()) {
+        if (plan.isEmpty()) {
             SectionHeader("Para saldar cuentas")
+            Text(
+                "Nadie debe nada a nadie.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = c.secondaryText,
+                modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 8.dp)
+            )
+        } else {
+            SectionHeader("Para saldar cuentas") {
+                if (!t.isArchived && plan.size > 1) {
+                    Text(
+                        "Saldar todo",
+                        color = c.brand,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.clickable { confirming = plan }
+                    )
+                }
+            }
             plan.forEach { leg ->
                 SmartRow(
                     title = "${leg.fromName} → ${leg.toName}",
-                    subtitle = "Un solo pago",
+                    subtitle = if (t.isArchived) "Un solo pago" else "Toca para registrar el pago",
                     value = formatMoney(leg.amount, t.currency),
-                    leading = { Initials(leg.fromName) }
+                    leading = { Initials(leg.fromName) },
+                    onClick = if (t.isArchived) null else { { confirming = listOf(leg) } }
                 )
                 SmartDivider()
             }
         }
+    }
+
+    if (confirming.isNotEmpty()) {
+        val legs = confirming
+        val total = legs.sumOf { it.amount }
+        ConfirmSheet(
+            title = if (legs.size == 1) {
+                "${legs[0].fromName} paga ${formatMoney(legs[0].amount, t.currency)} a ${legs[0].toName}"
+            } else {
+                "Saldar las cuentas del grupo"
+            },
+            body = if (legs.size == 1) {
+                "Se añade como transferencia al grupo y los dos saldos se ajustan. " +
+                    "Hazlo cuando el pago esté hecho de verdad."
+            } else {
+                "Se añaden ${legs.size} transferencias por " +
+                    "${formatMoney(total, t.currency)} en total y el grupo queda a cero. " +
+                    "Hazlo cuando los pagos estén hechos de verdad."
+            },
+            confirmLabel = if (legs.size == 1) "Registrar el pago" else "Registrar los ${legs.size} pagos",
+            onDismiss = { confirming = emptyList() },
+            onConfirm = { vm.settle(t, legs); confirming = emptyList() }
+        )
     }
 }

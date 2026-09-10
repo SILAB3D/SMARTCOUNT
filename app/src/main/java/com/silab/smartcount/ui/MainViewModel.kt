@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.silab.smartcount.SmartCountApp
 import com.silab.smartcount.data.api.Category
 import com.silab.smartcount.data.api.Member
+import com.silab.smartcount.data.api.SettlementLeg
 import com.silab.smartcount.data.api.Transaction
 import com.silab.smartcount.data.api.Tricount
 import com.silab.smartcount.data.api.TricountClient
@@ -52,6 +53,11 @@ data class UiState(
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
+
+    companion object {
+        /** Descripción de los movimientos que crea la liquidación. */
+        const val SETTLEMENT_DESCRIPTION = "Liquidación"
+    }
 
     private val appCtx = app as SmartCountApp
     private val client: TricountClient get() = appCtx.client
@@ -209,6 +215,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         require(from.uuid != to.uuid) { "Una transferencia necesita dos personas distintas" }
         client.createReimbursement(tricount, from, to, amount, description, date = date)
         _state.value = _state.value.copy(message = "Transferencia añadida")
+        refreshQuiet()
+    }
+
+    /**
+     * Liquidación: convierte los pagos que propone el plan en transferencias
+     * reales, para que los saldos vuelvan a cero.
+     *
+     * Se registra como transferencia (tipo BALANCE) y no como un apunte aparte
+     * porque el plan es un cálculo, no un dato: en cuanto el pago existe como
+     * movimiento, el balance se recalcula solo y el pago desaparece del plan.
+     * Así también lo ve el resto del grupo desde la app oficial de Tricount.
+     *
+     * Los pagos se crean uno a uno y en orden. Si uno falla, los anteriores
+     * quedan hechos: son movimientos válidos por sí mismos, y el plan que
+     * queda después ya solo propone lo que falte.
+     */
+    fun settle(tricount: Tricount, legs: List<SettlementLeg>) = launchGuarded {
+        require(legs.isNotEmpty()) { "No hay nada que saldar" }
+        legs.forEach { leg ->
+            val from = tricount.memberByUuid(leg.fromUuid)
+                ?: throw IllegalStateException("«${leg.fromName}» ya no está en el grupo")
+            val to = tricount.memberByUuid(leg.toUuid)
+                ?: throw IllegalStateException("«${leg.toName}» ya no está en el grupo")
+            client.createReimbursement(tricount, from, to, leg.amount, SETTLEMENT_DESCRIPTION)
+        }
+        _state.value = _state.value.copy(
+            message = if (legs.size == 1) {
+                "Saldado: ${legs.first().fromName} → ${legs.first().toName}"
+            } else {
+                "${legs.size} pagos registrados · cuentas en paz"
+            }
+        )
         refreshQuiet()
     }
 

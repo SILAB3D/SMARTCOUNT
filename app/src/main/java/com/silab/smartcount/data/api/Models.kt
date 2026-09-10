@@ -186,4 +186,17 @@ data class Tricount(
     }
 }
 
-data class SettlementLeg(val fromName: String, val toName: String, val amount: Double)
+/**
+ * Un pago del plan de liquidación: quién paga a quién y cuánto.
+ *
+ * Lleva los uuid además de los nombres porque el plan no solo se enseña: desde
+ * el balance se puede registrar como transferencia, y para eso hace falta el
+ * miembro exacto — dos personas del grupo pueden llamarse igual.
+ */
+data class SettlementLeg(
+    val fromUuid: String,
+    val fromName: String,
+    val toUuid: String,
+    val toName: String,
+    val amount: Double
+)

@@ -107,6 +107,43 @@ no deja guardar si coinciden.
 (el signo del importe y la forma de las asignaciones dependen de él), así que
 cambiar de tipo es borrar y volver a crear, no editar.
 
+## Balance y liquidación
+
+La pestaña **Balance** de un grupo tiene dos mitades: el saldo de cada persona y
+el plan para dejarlo a cero.
+
+**El saldo** se calcula en el móvil a partir de los movimientos descargados.
+Cada uno suma a favor de quien pone el dinero y en contra de quien se lo lleva,
+pero con qué signo depende del tipo, y ahí es donde la API engaña: guarda los
+gastos en negativo y los ingresos en positivo, pero el reembolso `BALANCE`
+**también en positivo** aunque cuente como un gasto. De ahí el signo explícito
+de `Stats.signOf`:
+
+| Tipo | Quién es el propietario | Efecto en el balance |
+|---|---|---|
+| **Gasto** | quien paga | queda a favor; los del reparto, a deber |
+| **Ingreso** | quien cobra | **pasa a deber** ese dinero; los del reparto, a favor |
+| **Transferencia** | quien envía | queda a favor; quien recibe, a deber |
+
+El ingreso va al revés que el gasto a propósito: si el casero devuelve la fianza
+a una sola persona, ese dinero es del grupo y quien lo tiene en el bolsillo se
+lo debe al resto.
+
+El saldo se calcula **por uuid** y solo después se agrupa por nombre, porque dos
+miembros pueden llamarse igual y sumarlos antes daría el saldo de los dos juntos.
+
+**La liquidación** empareja al mayor deudor con el mayor acreedor hasta que no
+queda nadie descuadrado, lo que da el menor número de pagos posible. No es solo
+informativa: cada pago se registra tocándolo, y *Saldar todo* registra el plan
+entero de una vez. Lo que se crea es una **transferencia** normal (`BALANCE`),
+no un apunte aparte — el plan es un cálculo, no un dato, así que en cuanto el
+pago existe como movimiento el saldo se recalcula solo y ese pago desaparece del
+plan. El resto del grupo lo ve igual desde la app oficial de Tricount.
+
+Los pagos se crean uno a uno y en orden. Si uno falla, los anteriores quedan
+hechos: son movimientos válidos por sí mismos, y el plan que queda después ya
+solo propone lo que falte.
+
 ## Las pestañas
 
 | Pestaña | Qué es |
@@ -432,6 +469,7 @@ Comprobaciones:
 python sim/parser_check.py    # 38 notificaciones reales
 python sim/eval_parser.py     # sensibilidad y variantes hipotéticas
 python sim/plan_check.py      # decisión de la asignación rápida
+python sim/balance_check.py   # balance neto y plan de liquidación
 pip install tricount-api
 python sim/payload_check.py   # payloads contra la librería de referencia
 
@@ -453,7 +491,9 @@ npm run check:ui              # 116 comprobaciones sobre el prototipo
 - **Sensibilidad**: `python sim/eval_parser.py` compara el reconocimiento con
   los campos en orden y con el título y el texto intercambiados (debe ser
   idéntico), y pasa las 16 variantes hipotéticas. 0 escapes en los tres.
-- **Liquidación**: 5 escenarios, comprobando que los pagos cuadran con las deudas.
+- **Balance y liquidación**: 12 escenarios en `sim/balance_check.py` — el signo de
+  cada tipo, el céntimo suelto de un reparto no divisible, que los saldos suman
+  cero, y que aplicar el plan deja el grupo en paz y sin nada que saldar.
 - **Decisión de la asignación rápida**: 10 escenarios de `planFor` (Bizum
   enviado/recibido, nombre completo contra nombre de pila, contraparte ajena al
   grupo, Bizum a ti mismo, transferencias).

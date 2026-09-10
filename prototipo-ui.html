@@ -231,11 +231,16 @@ const abs = a => Math.abs(parseFloat(a.value));
 const nameOf = (g,u) => (g.members.find(m=>m.uuid===u)||{}).name || '?';
 const active = g => g.transactions.filter(t=>t.status==='ACTIVE');
 
+// Un ingreso va al revés que un gasto: quien cobra en nombre del grupo pasa a
+// deberle ese dinero al resto. La transferencia (BALANCE) cuenta como gasto,
+// porque quien envía el dinero es el propietario del movimiento.
+const signOf = tx => tx.type==='INCOME' ? -1 : 1;
 function balances(g){
   const b={}; g.members.forEach(m=>b[m.name]=0);
   active(g).forEach(tx=>{
-    const p=nameOf(g,tx.ownerUuid); b[p]=(b[p]||0)+abs(tx.amount);
-    tx.allocations.forEach(a=>{const n=nameOf(g,a.membershipUuid); b[n]=(b[n]||0)-abs(a.amount);});
+    const s=signOf(tx);
+    const p=nameOf(g,tx.ownerUuid); b[p]=(b[p]||0)+s*abs(tx.amount);
+    tx.allocations.forEach(a=>{const n=nameOf(g,a.membershipUuid); b[n]=(b[n]||0)-s*abs(a.amount);});
   });
   Object.keys(b).forEach(k=>b[k]=r2(b[k])); return b;
 }

@@ -17,39 +17,58 @@ object Stats {
     private fun r2(v: Double) = round(v * 100.0) / 100.0
 
     /**
-     * Balance por miembro: positivo = le deben dinero, negativo = debe dinero.
-     * La API guarda los gastos en negativo y los ingresos en positivo, así que
-     * trabajamos con valores absolutos.
+     * Con qué signo entra un movimiento al balance.
+     *
+     * Un gasto deja a favor a quien puso el dinero y a deber a los que se lo
+     * reparten; una transferencia entre dos miembros funciona igual, porque
+     * quien envía el dinero es el propietario del movimiento.
+     *
+     * Un ingreso va justo al revés: quien cobra en nombre del grupo — la fianza
+     * que devuelve el casero, por ejemplo — se queda ese dinero en el bolsillo y
+     * pasa a debérselo al resto. La API guarda los gastos en negativo y los
+     * ingresos en positivo; aquí trabajamos con valores absolutos y este signo,
+     * porque el reembolso (BALANCE) también se guarda en positivo y sin embargo
+     * cuenta como un gasto.
      */
-    fun balances(t: Tricount): Map<String, Double> {
-        val result = t.members.associate { it.displayName to 0.0 }.toMutableMap()
+    private fun signOf(tx: Transaction): Double = if (tx.type == TxType.INCOME) -1.0 else 1.0
+
+    /**
+     * Balance por miembro, por uuid: positivo = le deben dinero, negativo = debe.
+     *
+     * Va por uuid y no por nombre porque dos miembros pueden llamarse igual, y
+     * el mapa de [balances] los funde en una sola entrada.
+     */
+    fun balancesByUuid(t: Tricount): Map<String, Double> {
+        val result = t.members.associate { it.uuid to 0.0 }.toMutableMap()
 
         for (tx in t.activeTransactions) {
             val payer = t.memberByUuid(tx.ownerUuid) ?: continue
-            val total = tx.amount.abs
+            val sign = signOf(tx)
 
-            result[payer.displayName] = (result[payer.displayName] ?: 0.0) + total
+            result[payer.uuid] = (result[payer.uuid] ?: 0.0) + sign * tx.amount.abs
             for (alloc in tx.allocations) {
                 val m = t.memberByUuid(alloc.membershipUuid) ?: continue
-                result[m.displayName] = (result[m.displayName] ?: 0.0) - alloc.amount.abs
+                result[m.uuid] = (result[m.uuid] ?: 0.0) - sign * alloc.amount.abs
             }
         }
         return result.mapValues { r2(it.value) }
     }
 
-    /**
-     * El balance de un miembro concreto, por uuid.
-     *
-     * Va por uuid y no por nombre porque dos miembros pueden llamarse igual —
-     * y en ese caso el mapa de [balances] los funde en una sola entrada, así
-     * que preguntarle por el nombre devolvería la suma de los dos.
-     */
+    /** El mismo balance, por nombre, para enseñarlo. */
+    fun balances(t: Tricount): Map<String, Double> =
+        balancesByUuid(t)
+            .entries
+            .groupBy { t.memberByUuid(it.key)?.displayName ?: "?" }
+            .mapValues { (_, entries) -> r2(entries.sumOf { it.value }) }
+
+    /** El balance de un miembro concreto, por uuid. */
     fun balanceOf(t: Tricount, membershipUuid: String?): Double {
         if (membershipUuid == null) return 0.0
         var total = 0.0
         for (tx in t.activeTransactions) {
-            if (tx.ownerUuid == membershipUuid) total += tx.amount.abs
-            total -= tx.allocations
+            val sign = signOf(tx)
+            if (tx.ownerUuid == membershipUuid) total += sign * tx.amount.abs
+            total -= sign * tx.allocations
                 .filter { it.membershipUuid == membershipUuid }
                 .sumOf { it.amount.abs }
         }
@@ -61,17 +80,17 @@ object Stats {
      * (greedy: se empareja el mayor deudor con el mayor acreedor).
      */
     fun settlementPlan(t: Tricount): List<SettlementLeg> {
-        val creditors = ArrayDeque<Pair<String, Double>>()
-        val debtors = ArrayDeque<Pair<String, Double>>()
+        val creditors = mutableListOf<Pair<String, Double>>()
+        val debtors = mutableListOf<Pair<String, Double>>()
 
-        balances(t).forEach { (name, bal) ->
+        balancesByUuid(t).forEach { (uuid, bal) ->
             when {
-                bal > 0.005 -> creditors.add(name to bal)
-                bal < -0.005 -> debtors.add(name to -bal)
+                bal > 0.005 -> creditors.add(uuid to bal)
+                bal < -0.005 -> debtors.add(uuid to -bal)
             }
         }
-        val sortedCred = creditors.sortedByDescending { it.second }.toMutableList()
-        val sortedDeb = debtors.sortedByDescending { it.second }.toMutableList()
+        val sortedCred = creditors.sortedByDescending { it.second }
+        val sortedDeb = debtors.sortedByDescending { it.second }
 
         val legs = mutableListOf<SettlementLeg>()
         var i = 0
@@ -82,7 +101,17 @@ object Stats {
         while (i < sortedCred.size && j < sortedDeb.size) {
             val pay = minOf(credLeft, debLeft)
             if (pay > 0.005) {
-                legs.add(SettlementLeg(sortedDeb[j].first, sortedCred[i].first, r2(pay)))
+                val from = sortedDeb[j].first
+                val to = sortedCred[i].first
+                legs.add(
+                    SettlementLeg(
+                        fromUuid = from,
+                        fromName = t.memberByUuid(from)?.displayName ?: "?",
+                        toUuid = to,
+                        toName = t.memberByUuid(to)?.displayName ?: "?",
+                        amount = r2(pay)
+                    )
+                )
             }
             credLeft -= pay
             debLeft -= pay
@@ -91,6 +120,9 @@ object Stats {
         }
         return legs
     }
+
+    /** ¿Está el grupo en paz? Es lo mismo que no quedar ningún pago pendiente. */
+    fun isSettled(t: Tricount): Boolean = settlementPlan(t).isEmpty()
 
     /** Total gastado (solo gastos, sin ingresos ni reembolsos). */
     fun totalSpent(t: Tricount): Double =
