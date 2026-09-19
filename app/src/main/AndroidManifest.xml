@@ -30,6 +30,7 @@
             <intent-filter>
                 <action android:name="com.silab.smartcount.OPEN_INBOX" />
                 <action android:name="com.silab.smartcount.NEW_EXPENSE" />
+                <action android:name="com.silab.smartcount.UPDATE" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
 
@@ -52,18 +53,6 @@
             </intent-filter>
         </service>
 
-
-        <!-- Asignación rápida desde los botones de la notificación -->
-        <receiver
-            android:name=".notif.QuickAssignReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.silab.smartcount.ASSIGN" />
-                <action android:name="com.silab.smartcount.UNDO" />
-                <action android:name="com.silab.smartcount.MUTE" />
-                <action android:name="com.silab.smartcount.UNMUTE" />
-            </intent-filter>
-        </receiver>
 
         <!-- Expone la APK descargada al instalador del sistema -->
         <provider

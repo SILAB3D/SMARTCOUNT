@@ -1,10 +1,15 @@
 {
   "name": "smartcount-sim",
   "private": true,
-  "version": "0.1.0",
-  "description": "Comprobaciones automatizadas del prototipo de interfaz de SmartCount",
+  "version": "0.2.0",
+  "description": "Comprobaciones automatizadas de SmartCount: interfaz, payloads, balance y asignación",
   "scripts": {
-    "check:ui": "node sim/run.js"
+    "check": "node sim/payload_check.js && node sim/balance_check.js && node sim/plan_check.js && node sim/run.js",
+    "check:ui": "node sim/run.js",
+    "check:payloads": "node sim/payload_check.js",
+    "check:balance": "node sim/balance_check.js",
+    "check:plan": "node sim/plan_check.js",
+    "check:api": "node sim/roundtrip.js"
   },
   "devDependencies": {
     "playwright": "^1.49.0"

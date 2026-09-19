@@ -52,6 +52,8 @@ Cabeceras en todas las llamadas: `app-id`, `X-Bunq-Client-Request-Id`, `User-Age
 | Crear movimiento | `POST /v1/user/{uid}/registry/{id}/registry-entry` |
 | Editar movimiento | `PUT  …/registry-entry/{txId}` |
 | Borrar movimiento | `DELETE …/registry-entry/{txId}` |
+| Renombrar grupo, emoji, miembros | `PUT  /v1/user/{uid}/registry/{id}` |
+| Archivar / desarchivar / quitar | `POST /v1/user/{uid}/registry-synchronization` |
 
 **Convenios de importe** (fáciles de equivocar):
 
@@ -59,8 +61,12 @@ Cabeceras en todas las llamadas: `app-id`, `X-Bunq-Client-Request-Id`, `User-Age
 - los **gastos son negativos**, los ingresos positivos,
 - `type_transaction`: `NORMAL` (gasto), `INCOME` (ingreso), `BALANCE` (reembolso
   entre miembros — el tipo natural para un Bizum entre gente del grupo),
+- **los gastos y las transferencias van en negativo; los ingresos, en positivo**,
 - fecha: `yyyy-MM-dd HH:mm:ss.SSSSSS`,
-- cada `allocation` lleva el `membership_uuid` y su parte, con el mismo signo que el total.
+- cada `allocation` lleva su `membership_uuid` y, o bien `type: AMOUNT` con el
+  importe (una parte fijada a mano), o bien `type: RATIO` con `share_ratio: 1`
+  y **sin importe**, y entonces el servidor reparte lo que quede,
+- las asignaciones **tienen que sumar el total** o la API responde 400.
 
 **Identidad.** Las credenciales (uuid + clave) se guardan cifradas con la keystore
 del dispositivo. Si las borras pierdes el acceso a los grupos sincronizados con esa
@@ -95,9 +101,9 @@ los campos que pide, porque no comparten forma:
 
 | Tipo | API | Campos | Se reparte |
 |---|---|---|---|
-| **Gasto** | `NORMAL` | pagado por, repartido entre, categoría | sí, en negativo |
-| **Ingreso** | `INCOME` | recibido por, repartido entre, categoría | sí, en positivo |
-| **Transferencia** | `BALANCE` | de, a | no: una sola asignación |
+| **Gasto** | `NORMAL` | pagado por, fecha, repartido entre, categoría | sí, en negativo |
+| **Ingreso** | `INCOME` | recibido por, fecha, repartido entre, categoría | sí, en positivo |
+| **Transferencia** | `BALANCE` | de, a, fecha | no: una sola asignación |
 
 Una transferencia no lleva categoría porque no es un gasto de nada: es dinero
 que cambia de manos dentro del grupo. Y exige dos personas distintas — la hoja
@@ -107,6 +113,45 @@ no deja guardar si coinciden.
 (el signo del importe y la forma de las asignaciones dependen de él), así que
 cambiar de tipo es borrar y volver a crear, no editar.
 
+### El reparto: a partes iguales o por cantidades
+
+El reparto por cantidades no se inventó aquí: se copió. Creando un movimiento
+de cada tipo **desde la app oficial** y leyéndolos después por la API se ve
+exactamente cómo los guarda, y es esto:
+
+| Movimiento creado en Tricount | total | propietario | asignaciones |
+|---|---|---|---|
+| Gasto igualitario entre tres | −10,00 | A | A −3,33 · B −3,33 · C −3,34, las tres `RATIO 1` |
+| Gasto desigual | −10,00 | A | A −7,50 (**`AMOUNT`**) · C −2,50 (`RATIO 1`) |
+| Ingreso igualitario | +10,00 | A | las tres `RATIO 1` |
+| Ingreso desigual | +10,00 | A | B 8,00 (**`AMOUNT`**) · A 2,00 (`RATIO 1`) |
+| Transferencia | **−10,00** | A | B −10,00 (`RATIO 1`) · A 0,00 (`AMOUNT`) |
+
+De ahí salen las tres reglas que sigue el cliente:
+
+1. **Solo las partes que fijas a mano van como `AMOUNT`.** Las demás viajan
+   como `RATIO 1` **sin importe** y es el servidor quien reparte lo que queda.
+   Antes esta app mandaba todo en `AMOUNT` con el reparto calculado en el
+   móvil: funcionaba, pero un gasto repartido a partes iguales quedaba
+   guardado igual que uno donde alguien hubiera escrito las cantidades a mano,
+   y el céntimo suelto lo colocaba el cliente en vez de quien lleva la cuenta.
+2. **La transferencia va en negativo.** Iba en positivo. El balance salía
+   igual —`Stats` trabaja con valores absolutos y su propia tabla de signos—
+   pero el apunte no era el mismo que ve el resto del grupo desde Tricount.
+3. **Las asignaciones tienen que sumar el total.** La API responde 400 («the
+   amounts of the allocations that you provided do not sum up to the amount of
+   the entry») y por eso la hoja no deja guardar un reparto descuadrado: dice
+   cuánto falta. Mientras quede alguien sin cantidad fijada no hace falta
+   cuadrar nada — ese se lleva el resto, que es justo lo que hace Tricount.
+
+La hoja enseña las dos formas: **a partes iguales**, con lo que le toca a cada
+uno al lado de su nombre, y **por cantidades**, con un campo por persona donde
+dejar en blanco significa «repártete lo que sobre».
+
+**La fecha se elige.** Antes no: todo movimiento se guardaba con la de hoy, así
+que apuntar el sábado la cena del viernes la colocaba en el día equivocado. Y
+al editar se conserva la que tenía, en vez de moverla al día de la corrección.
+
 ## Balance y liquidación
 
 La pestaña **Balance** de un grupo tiene dos mitades: el saldo de cada persona y
@@ -114,10 +159,10 @@ el plan para dejarlo a cero.
 
 **El saldo** se calcula en el móvil a partir de los movimientos descargados.
 Cada uno suma a favor de quien pone el dinero y en contra de quien se lo lleva,
-pero con qué signo depende del tipo, y ahí es donde la API engaña: guarda los
-gastos en negativo y los ingresos en positivo, pero el reembolso `BALANCE`
-**también en positivo** aunque cuente como un gasto. De ahí el signo explícito
-de `Stats.signOf`:
+pero con qué signo depende del tipo, y el signo con el que la API los guarda no
+sirve para deducirlo: el gasto y la transferencia van en negativo y el ingreso
+en positivo, pero el ingreso es el único de los tres que cuenta al revés. Por
+eso `Stats` trabaja con **valores absolutos** y repone el signo él mismo:
 
 | Tipo | Quién es el propietario | Efecto en el balance |
 |---|---|---|
@@ -128,6 +173,11 @@ de `Stats.signOf`:
 El ingreso va al revés que el gasto a propósito: si el casero devuelve la fianza
 a una sola persona, ese dinero es del grupo y quien lo tiene en el bolsillo se
 lo debe al resto.
+
+Que sea insensible al signo guardado no es casualidad ni suerte: es lo que ha
+permitido igualar la transferencia a la forma de la app oficial —que la escribe
+en negativo— sin tocar una línea del balance. Hay una comprobación que lo fija:
+las dos representaciones dan exactamente los mismos saldos.
 
 El saldo se calcula **por uuid** y solo después se agrupa por nombre, porque dos
 miembros pueden llamarse igual y sumarlos antes daría el saldo de los dos juntos.
@@ -144,44 +194,108 @@ Los pagos se crean uno a uno y en orden. Si uno falla, los anteriores quedan
 hechos: son movimientos válidos por sí mismos, y el plan que queda después ya
 solo propone lo que falte.
 
+## Cómo se navega
+
+Cinco pestañas, y cada una recuerda dónde la dejaste. Eso plantea dos
+preguntas que antes no tenían respuesta: cómo se vuelve al principio de una
+pestaña, y qué hace el botón atrás del móvil.
+
+- **Un toque** en una pestaña va a ella y la deja como estaba: si habías
+  dejado un grupo abierto, sigue abierto.
+- **Dos toques seguidos** en la misma pestaña vuelven a su ventana principal.
+  El primer toque no puede esperar a ver si llega el segundo — sería un
+  retardo en el gesto más frecuente de la app —, así que cambia de pestaña ya
+  y es el segundo el que cierra lo que hubiera abierto.
+- **El botón atrás** deshace un paso de la pestaña actual: cierra la hoja si
+  hay una, y si no, el grupo abierto. En la ventana principal cierra la app.
+
+Las hojas inferiores no necesitan nada especial: `ModalBottomSheet` se queda
+con el gesto mientras está abierta, así que cerrarla es siempre el primer paso
+atrás. Las sub-pestañas de dentro de una pantalla (Movimientos/Balance,
+Categoría/Persona/Mes) **no** cuentan como ventanas: son dos vistas de lo
+mismo, no dos sitios.
+
+
 ## Las pestañas
 
 | Pestaña | Qué es |
 |---|---|
-| **Grupos** | Rejilla de dos columnas con todos los grupos y su cifra. Al tocar uno se abre |
+| **Grupos** | Rejilla de dos columnas con buscador. Al tocar un grupo se abre |
 | **Ahorro** | Solo los grupos de ahorro, con ingresos, gastos y balance de cada uno y del conjunto |
-| **Estadísticas** | Separadas en grupos normales y grupos de ahorro |
-| **Bandeja** | Lo detectado, agrupado en movimientos y no-movimientos |
-| **Ajustes** | Detección, avisos, silenciados, grupos de ahorro y actualizaciones |
+| **Estadísticas** | En qué se va el dinero, del grupo entero o solo tu parte |
+| **Bandeja** | Lo detectado, en tres cajones |
+| **Ajustes** | Apartados plegables; arriba, la actualización cuando la hay |
 
 La rejilla sustituye a la tira horizontal de chips que había antes: con más de
 tres o cuatro grupos había que desplazarla a ciegas para encontrar el que se
 busca, y no decía nada de cada uno. Cada ficha lleva ya la cifra que define al
 grupo — lo que te deben, o el balance si es de ahorro — que es a lo que se
-entraba.
+entraba. Los grupos de ahorro van sobre un **fondo teñido de azul**: se
+distinguen de un vistazo sin leer la etiqueta, que es lo que se le pide a una
+rejilla. Y en cuanto hay más de tres grupos aparece un **buscador** por título,
+que ignora mayúsculas y tildes.
+
+Dentro de un grupo normal, bajo la cifra grande van **mis gastos y los gastos
+del grupo**, en el mismo formato que las tres cifras de un grupo de ahorro.
+«Mis gastos» es tu parte del reparto, no lo que has adelantado: es la cifra que
+contesta a «¿cuánto me está costando a mí esto?». Antes ahí había una línea de
+texto que solo daba el total.
+
+Cada movimiento de la lista dice **quién lo hizo y a quién afecta**: «Ana pagó
+· entre Ana y Beto», «Ana → Beto» en una transferencia, «Ana pagó · entre
+todos» cuando entran todos y «entre 5 personas» cuando son muchos para
+nombrarlos. Era la mitad de la información de un gasto compartido y no estaba:
+la fila decía «Ana · 3 sep» y había que abrir el movimiento para saber si esos
+40 € eran de los cinco o solo de dos.
+
+La pestaña de **Estadísticas** pregunta dos cosas distintas y ahora deja elegir
+cuál: el gasto **de todo el grupo** o **solo tu parte**, acotado a un mes, a un
+año o a todo. La distribución por categoría se dibuja como un anillo con su
+leyenda —nombre, porcentaje e importe de cada porción—, y a partir de la sexta
+categoría las demás se juntan en «Otros», porque un anillo de doce porciones no
+se lee. Los colores del anillo son una paleta propia, aparte del verde y el
+rojo del dinero: aquí el color identifica una categoría, no dice si algo va
+bien o mal. Está comprobada para daltonismo sobre los dos fondos, y aun así el
+color nunca va solo — cada porción tiene su nombre y su cifra en la leyenda.
 
 ## Grupos de ahorro
 
 Un grupo de ahorro **no es un tipo de grupo de Tricount**: es un grupo normal
 leído de otra manera, y la marca vive solo en este móvil. Para Tricount sigue
 siendo un grupo con sus movimientos, así que la app oficial lo abre sin
-enterarse de nada. Se convierte, y se revierte, con el botón **Ahorro** del
-propio grupo o desde Ajustes.
+enterarse de nada. Se convierte, y se revierte, desde *Gestionar* en el propio
+grupo.
 
-La convención es la que hace el trabajo:
+Dos papeles hacen todo el trabajo:
 
 - una **fuente de ingresos**: un miembro que suele llamarse *Ingresos*,
-- una **fuente de gastos**: tú,
+- una **fuente de gastos**: quien saca el dinero, que normalmente eres tú,
 - lo que sale de la fuente de ingresos son los ingresos,
 - lo demás son los gastos, y el **balance** es la resta.
+
+Los dos se eligen a mano desde el grupo. El de gastos antes no: se daba por
+hecho que eras tú, y en un grupo donde la API no dice cuál de los miembros
+eres — que son casi todos, los que se unieron por enlace — no había forma de
+decírselo.
+
+Con los papeles puestos, **todo lo que crea la app en un grupo de ahorro los
+respeta**: un gasto va de quien gasta hacia quien gasta, y un ingreso de la
+fuente de ingresos hacia quien gasta. Se impone en el único sitio por el que
+pasan todas las altas, y no en cada pantalla, porque antes la hoja del grupo sí
+lo hacía pero la bandeja y la notificación no: asignar un recibo a un grupo de
+ahorro creaba un gasto repartido como en cualquier otro grupo, y el balance del
+grupo salía mal.
 
 Al convertir un grupo se añade el miembro *Ingresos* **solo si no hay ya una
 fuente de ingresos**. Se aceptan varias formas del nombre — *Ingresos*,
 *Ingreso*, *Income*, *Nómina* — porque los grupos reales no respetan la
-convención al pie de la letra: el grupo con el que se probó esto tiene el
-miembro en singular, y exigir el plural exacto lo dejaba fuera y le añadía un
-segundo miembro que no hacía falta. Y cuando el nombre no se parece a ninguna
-de esas formas, la fuente **se elige a mano** desde el propio grupo.
+convención al pie de la letra.
+
+> **El alta de miembros estaba rota.** Se mandaba `alias.display_name`, y la
+> API lo rechaza con «Superfluous field "display_name"»: `alias` no es un
+> nombre suelto sino un *pointer*, con su `type`, su `value` y su `name`. Es
+> decir, convertir un grupo que no tuviera ya un miembro llamado *Ingresos*
+> fallaba. No se notó porque el grupo con el que se probó lo tenía.
 
 **Se mira el propietario de cada movimiento, no su tipo.** Es lo que distingue
 de qué lado viene el dinero sea cual sea el tipo con el que se creó: un ingreso
@@ -202,10 +316,35 @@ Qué cambia en la pantalla del grupo:
   de miembros: los papeles ya están decididos.
 
 La pestaña **Ahorro** los junta todos: el balance del conjunto arriba, con sus
-ingresos y gastos, y debajo cada grupo con sus tres cifras y una barra que dice
-cuánto de lo ingresado sigue ahí. El total solo se enseña si todos los grupos
-comparten moneda; sumar euros y libras daría una cifra falsa, así que en ese
-caso se dice y se remite a cada grupo.
+ingresos y gastos, y debajo cada grupo con su ficha. El total solo se enseña si
+todos los grupos comparten moneda; sumar euros y libras daría una cifra falsa,
+así que en ese caso se dice y se remite a cada grupo.
+
+## Gestionar un grupo
+
+Desde *Gestionar*, dentro del grupo: renombrarlo, cambiarle el emoji, añadir y
+renombrar miembros, convertirlo en grupo de ahorro, archivarlo o quitarlo de la
+app. Y desde la rejilla, **crear un grupo nuevo** con sus miembros, que antes
+solo se podía pegando el enlace de uno que ya existiera.
+
+Tres cosas que la API impone y conviene saber:
+
+- **Quitar un miembro no se puede.** Ni omitiéndolo de la lista (lo conserva),
+  ni mandándolo con `status: INACTIVE` (lo devuelve ACTIVE), ni borrando la
+  pertenencia (`Route not found`). Comprobado contra la API con miembros
+  recién creados y sin ningún movimiento a su nombre. Así que no hay botón: uno
+  que no hace nada y no lo dice es peor que no tenerlo. Se renombra —eso sí
+  va— y quien necesite quitar a alguien lo hace desde la app oficial.
+- **Un grupo archivado desaparece de la API.** No lo devuelve `/registry` ni
+  pidiéndolo por estado, pero sí se lee por su enlace público. Por eso, antes
+  de archivar, SmartCount anota el enlace y el nombre en el móvil: sin eso,
+  archivar sería perderlo. Los archivados salen al final de la rejilla y se
+  recuperan de un toque.
+- **Quitar un grupo lo quita de esta app, no del mundo.** Se deshace la
+  sincronización; el grupo sigue existiendo para el resto y se vuelve a entrar
+  con su enlace. Borrarlo de verdad no se ofrece: sería un botón que destruye
+  los datos de más gente.
+
 
 ## Detección de movimientos
 
@@ -283,9 +422,21 @@ ignora tildes, mayúsculas y el orden de los apellidos.
 
 ### La bandeja calibra el parser
 
-La bandeja enseña **dos grupos**: lo que se ha reconocido como movimiento
-bancario y lo que no. Y cualquiera de los dos se mueve al otro con un toque, con
-esa decisión mandando sobre la del parser a partir de ahí.
+La bandeja enseña **tres cajones**, y cualquier notificación se mueve de uno a
+otro con un toque, con esa decisión mandando sobre la del parser a partir de
+ahí:
+
+| Cajón | Qué hay dentro | Qué se puede hacer |
+|---|---|---|
+| **Movimientos bancarios** | Lo que el parser reconoció como cargo o abono | Asignarlo a uno o varios grupos; moverlo a otro cajón |
+| **Otros eventos** | Lo que llegó de una app que miramos y no parece un movimiento | Marcarlo como movimiento (y su app pasa a vigilada), o como no bancario |
+| **No bancarios** | Lo que no tiene nada que ver con el banco | Su app deja de seguirse; se reactiva en Ajustes |
+
+Eran dos cajones y no daban para lo que hay que decidir. Un aviso de tu banco
+que no es un cargo y la notificación de un juego no son la misma cosa aunque
+las dos «no sean movimientos»: la primera viene de una app que quieres seguir
+mirando y la segunda de una que no. Separarlas permite que cada una tenga la
+acción que le corresponde.
 
 Enseñar también lo descartado es lo que convierte la bandeja en el sitio donde
 se afina el sistema y no solo donde se recogen resultados. El parser se equivoca
@@ -294,19 +445,30 @@ comercial colado entre los movimientos se aparta de un toque, pero **un
 movimiento descartado por error se perdía sin dejar rastro** — los avisos de
 nómina de BBVA, que llegan sin importe, son el caso de libro. Ahora se rescatan.
 
-Para que haya algo que calibrar, las notificaciones de las apps vigiladas se
-guardan **aunque el parser no las entienda**, no solo en modo aprendizaje. El
-volumen queda acotado porque solo vienen de las apps que has elegido. La chapa
-de la pestaña cuenta únicamente los movimientos: contarlo todo la llenaría de
-avisos comerciales que nadie va a asignar.
+Lo ya enviado a Tricount no desaparece: queda en **Enviados**, dentro de la
+propia bandeja, para poder mirar atrás.
 
 - El permiso **Acceso a notificaciones** se concede a mano en los ajustes del sistema.
 - La lista de bancos es una semilla (Revolut, Trade Republic, BBVA, CaixaBank,
-  Santander y otros); si el tuyo no aparece o cambió de package, activa **Modo
-  aprendizaje** en Ajustes: registra todas las notificaciones para que puedas
-  identificar el paquete y añadirlo.
+  Santander y otros). Las apps no se quitan, se **desactivan**, y las que
+  notifiquen sin estar vigiladas se anotan aparte para poder activarlas de un
+  toque: así se encuentra el paquete de tu banco sin saberlo de memoria.
 - Deduplicación por hash del contenido en una ventana de 5 minutos: los bancos
   republican la misma notificación al actualizarla.
+
+### Hasta dónde llega la vigilancia
+
+El interruptor de «modo aprendizaje» mezclaba dos preguntas —qué apps mirar y
+si descubrir apps nuevas— en un solo sí o no. Ahora son tres escalones:
+
+| Modo | Qué se mira |
+|---|---|
+| **Apagado** | Solo los bancos que trae la app de fábrica |
+| **Selectivo** (por defecto) | Las apps vigiladas que tengas activadas |
+| **Completo** | Todas las apps del dispositivo, para descubrir la tuya |
+
+En los dos primeros se respeta siempre lo que hayas apagado a mano: desactivar
+un banco significa desactivarlo, no «desactivarlo salvo en modo apagado».
 
 ## Widgets
 
@@ -344,58 +506,60 @@ recurrentes o los de confianza baja (recibos domiciliados, ingresos y cargos sin
 identificar).
 
 **Por origen** (Ajustes → *Silenciados*). Un comercio o una persona silenciados
-dejan de avisar y de llegar a la bandeja. Lo importante es cómo se silencian: la
-propia notificación trae un botón **«No avisar de Netflix»**, así que la primera
-vez que te moleste una suscripción la callas desde la pantalla de bloqueo, sin
-abrir la app. El silenciado se confirma con otra notificación que ofrece
-**Deshacer** 30 segundos, y en Ajustes se puede reactivar. La comparación de
-nombres ignora tildes, mayúsculas y puntuación, para que «Filmin » y «filmin»
-sean el mismo comercio.
+dejan de avisar y de llegar a la bandeja. Se callan desde la hoja del
+movimiento — *No volver a avisar de «X»* — y se reactivan en Ajustes. La
+comparación de nombres ignora tildes, mayúsculas y puntuación, para que
+«Filmin » y «filmin» sean el mismo comercio.
 
-También está disponible dentro de la app, en la hoja de asignación de cada
-movimiento: *No volver a avisar de «X»*.
+Estuvo en la propia notificación, para poder callar una suscripción desde la
+pantalla de bloqueo. Ya no: Android enseña tres acciones y las tres se las
+llevan los grupos, así que ese botón se añadía y no se veía. Dentro de la app,
+además, se lee el nombre entero del comercio antes de silenciarlo.
 
 ## Notificación al detectar un movimiento
 
-Cuando el `NotificationListenerService` reconoce un Bizum o una transferencia,
-SmartCount lanza su propia notificación accionable:
+Cuando el `NotificationListenerService` reconoce un movimiento, SmartCount
+lanza su propia notificación accionable:
 
 ```
 SMARTCOUNT
 Bizum recibido 18,00 € · Ben Torres
 «entradas» · ¿a qué grupo lo llevas?
-[ Piso Salamanca ]  [ Viaje Lisboa ]  [ Elegir… ]
+[ Piso Salamanca ]  [ Ahorro: Casa ]  [ Elegir… ]
 ```
 
-- Los dos grupos más probables (el activo primero) van como botones: un toque
-  desde la pantalla de bloqueo y listo, sin abrir la app.
-- *Elegir…* abre la app en la bandeja, con la hoja de ese movimiento ya abierta,
-  y allí el movimiento puede ir a **varios grupos a la vez** y con **la persona
-  que elijas** en cada uno. El recibo de la luz va al piso y al grupo de ahorro,
-  y hacerlo dos veces obligaba a repetir importe y descripción a mano. Los
-  miembros de un grupo no son los del otro, así que *quién paga* y *entre
-  quiénes se reparte* se deciden grupo a grupo.
+Tres botones, que son las tres cosas que se hacen con un cargo recién
+detectado: llevarlo al **grupo normal más reciente**, al **grupo de ahorro más
+reciente**, o decidirlo tú.
 
-Por defecto **avisa todo movimiento reconocido**. Las dos excepciones no son
-movimientos que repartir: lo que mueves entre tus propias cuentas no cambia de
-manos, y lo que el parser no supo leer no tiene ni importe que ofrecer.
-- *No avisar de X* silencia ese comercio o esa persona para siempre.
-- Tras asignar, la notificación se sustituye por una confirmación con
-  **Deshacer** durante 30 segundos, que borra el movimiento en Tricount y
-  devuelve la entrada a la bandeja.
+**Los tres abren la app con el movimiento ya preparado; ninguno lo envía a
+Tricount por su cuenta.** Antes el botón de un grupo lo creaba desde la
+pantalla de bloqueo y ofrecía deshacerlo treinta segundos. Era más rápido, pero
+un cargo casi nunca llega listo para guardar —hay que mirar entre quién se
+reparte, si la descripción del banco vale, si el importe es el bueno— y lo que
+se ganaba en un toque se perdía luego corrigiendo desde dentro. Ahora el botón
+elige el grupo y la app abre la hoja con esa elección puesta.
 
-Qué se crea al pulsar un grupo (`QuickAssignReceiver.planFor`):
+**Reciente** es el último grupo en el que pasó algo, contando tanto su último
+movimiento como el día en que entró en la app: un grupo recién añadido no tiene
+movimientos todavía y es justo donde vas a querer llevar lo siguiente. Se mira
+`created` y no `date`, porque la fecha la pone quien crea el movimiento y puede
+ser de hace meses. Si no hay grupos de ahorro, ese botón no aparece.
 
-| Caso | Movimiento |
-|---|---|
-| Bizum enviado a alguien del grupo | Reembolso tú → esa persona |
-| Bizum recibido de alguien del grupo | Reembolso esa persona → tú |
-| Contraparte que no está en el grupo | Gasto repartido entre todos, pagado por ti |
-| Transferencia, o tipo desconocido | Gasto repartido entre todos, pagado por ti |
+Son tres botones y no cuatro porque **Android enseña como mucho tres
+acciones**: la cuarta se añade y no se ve — que es lo que le pasaba a «No
+avisar de X», que llevaba tiempo sin aparecer sin que nadie se diera cuenta.
+Silenciar un comercio se hace desde la hoja del movimiento, que es además donde
+se lee su nombre entero.
 
-El emparejamiento de nombres tolera que el banco diga «BEN TORRES» y el grupo
-solo «Ben». Todo queda en la bandeja como enviado, así que se puede corregir
-después en la app.
+La hoja llega con una propuesta hecha (`AssignPlan`): un pago entre personas
+—Bizum o transferencia— con alguien que está en el grupo se propone como
+reembolso de uno a otro, porque eso es literalmente lo que pasó; lo demás, como
+gasto repartido. El emparejamiento de nombres tolera que el banco diga «BEN
+TORRES» y el grupo solo «Ben». Desde ahí el movimiento puede ir a **varios
+grupos a la vez** y con **la persona que elijas** en cada uno: el recibo de la
+luz va al piso y al grupo de ahorro, y hacerlo dos veces obligaba a repetir
+importe y descripción a mano.
 
 ## Actualización automática
 
@@ -405,12 +569,24 @@ móvil, sin descargar ningún APK a mano.
 ```
 push a main → GitHub Actions compila y FIRMA la APK → Release v<name>-b<code>
                                                           │
-        la app, al arrancar: consulta la API, compara, descarga, instala
+        la app: al arrancar y una vez al día, consulta, avisa, descarga e instala
 ```
 
 **Android no deja instalar en silencio** a una app normal: eso exige ser *device
 owner* o app de sistema. Comprobar, descargar y preparar sí es automático; el
 último paso es siempre un diálogo del sistema que confirma la persona.
+
+**Se comprueba también en segundo plano, una vez al día** (`WorkManager`, con
+red). Hasta ahora solo se miraba al abrir la app, así que una versión publicada
+el lunes podía descubrirse el viernes: justo al revés de lo que se le pide a un
+canal cuyo objetivo es que un push acabe instalado. Cuando hay algo, lo dice con
+una notificación en su propio canal, con un botón que abre la app y **empieza la
+descarga sin pedir otro toque**. Avisa **una sola vez por versión**: un aviso
+diario de la misma actualización enseñaría a ignorarlo, que es la única forma
+segura de que el aviso importante pase desapercibido.
+
+Dentro de la app, la actualización aparece **arriba del todo en Ajustes**, y
+solo cuando la hay.
 
 **El `versionCode` es el número de commits** (`git rev-list --count HEAD`), no la
 versión semántica: crece solo y nadie tiene que acordarse de subirlo. La
@@ -448,9 +624,8 @@ Requisitos para que el canal funcione:
 
 ## Compilar y probar
 
-Requisitos: **JDK 17 o superior**, **Android SDK** con la plataforma **API 35**,
-**Node 18+** (comprobaciones de interfaz) y **Python 3.10+** (comprobaciones del
-parser y de los payloads). Gradle lo descarga el wrapper.
+Requisitos: **JDK 17 o superior**, **Android SDK** con la plataforma **API 35**
+y **Node 18+**. Gradle lo descarga el wrapper.
 
 ```bash
 # 1. Apuntar al SDK de Android (o definir ANDROID_HOME)
@@ -466,22 +641,43 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 Comprobaciones:
 
 ```bash
+npm install
+npm run check:payloads   # las peticiones que se mandan a la API
+npm run check:balance    # balance neto y plan de liquidación
+npm run check:plan       # la propuesta de la hoja de asignación
+npx playwright install chromium
+npm run check:ui         # 166 comprobaciones sobre el prototipo, en claro y oscuro
+npm run check            # todas las anteriores de una vez
+
+# Contra la API de verdad, en un grupo de usar y tirar: crea un movimiento de
+# cada tipo, lo relee, comprueba la forma y lo borra.
+npm run check:api -- https://tricount.com/<token-de-tu-grupo-de-pruebas>
+
+# El parser sigue comprobándose en Python, que es donde vive su referencia
 python sim/parser_check.py    # 38 notificaciones reales
 python sim/eval_parser.py     # sensibilidad y variantes hipotéticas
-python sim/plan_check.py      # decisión de la asignación rápida
-python sim/balance_check.py   # balance neto y plan de liquidación
-pip install tricount-api
-python sim/payload_check.py   # payloads contra la librería de referencia
-
-npm install && npx playwright install chromium
-npm run check:ui              # 116 comprobaciones sobre el prototipo
 ```
+
+> Las comprobaciones de balance, liquidación, payloads y asignación estaban en
+> Python y se han pasado a Node, que es lo que ya hacía falta para la interfaz:
+> una dependencia menos que instalar para poder ejecutarlas. Las del parser se
+> quedan en Python porque su referencia (`sim/parser_ref.py`) **es** el
+> contraste contra el que se valida `MovementParser.kt`, y traducirla crearía
+> una tercera copia de las mismas reglas.
 
 ## Verificación
 
-- **Payloads**: los 6 tipos de petición (gasto, gasto no divisible, gasto con
-  categoría, ingreso, reembolso, rutas/verbos) se comparan campo a campo contra
-  una librería de referencia. 6/6.
+- **Payloads**: las peticiones de los cinco tipos de movimiento se comparan con
+  la forma exacta que produce la app oficial —leída de sus propios movimientos—
+  y se comprueba que lo que la API rechaza no llega a salir. 14/14
+  (`sim/payload_check.js`).
+- **Contra la API de verdad**: `sim/roundtrip.js` crea un movimiento de cada
+  tipo en un grupo de pruebas con las mismas peticiones que manda la app, lo
+  relee tal y como lo ha guardado el servidor, comprueba tipo, signo, reparto y
+  que las asignaciones suman el total, y lo borra. 28/28, y el grupo queda como
+  estaba. Es la comprobación que no puede hacer la anterior: aquella compara
+  contra una forma conocida, y esta pregunta al servidor si esa forma es la que
+  él entiende.
 - **PKCS#1**: el PEM generado se valida byte a byte contra OpenSSL.
 - **Parser de notificaciones**: 38 notificaciones reales de Revolut, Trade Republic
   y BBVA (`sim/corpus_notificaciones.tsv`, con los nombres de personas
@@ -491,57 +687,80 @@ npm run check:ui              # 116 comprobaciones sobre el prototipo
 - **Sensibilidad**: `python sim/eval_parser.py` compara el reconocimiento con
   los campos en orden y con el título y el texto intercambiados (debe ser
   idéntico), y pasa las 16 variantes hipotéticas. 0 escapes en los tres.
-- **Balance y liquidación**: 12 escenarios en `sim/balance_check.py` — el signo de
+- **Balance y liquidación**: 13 escenarios en `sim/balance_check.js` — el signo de
   cada tipo, el céntimo suelto de un reparto no divisible, que los saldos suman
-  cero, y que aplicar el plan deja el grupo en paz y sin nada que saldar.
-- **Decisión de la asignación rápida**: 10 escenarios de `planFor` (Bizum
+  cero, que aplicar el plan deja el grupo en paz, y que cambiar el signo con el
+  que se guarda una transferencia no altera ningún balance.
+- **Propuesta de asignación**: 12 escenarios de `sim/plan_check.js` (Bizum
   enviado/recibido, nombre completo contra nombre de pila, contraparte ajena al
-  grupo, Bizum a ti mismo, transferencias).
+  grupo, Bizum a ti mismo, transferencias dentro y fuera del grupo).
 - **Icono**: el glifo medía 64 × 45 unidades del lienzo de 108 y se leía como una
   marca apaisada, sobre todo junto al texto. Se comprimieron las **posiciones**
   hacia el centro (barra 22..86 → 28..80, asta 38,5 → 41,5, puntos 71 → 68)
   dejando intactos los grosores y el radio de los puntos: 52 × 45, casi cuadrado,
   sin adelgazar ningún trazo. Renderizado a 160/96/64/48/36/24 px y la silueta a
-  48/32/24/18 px,
-  sobre claro y oscuro, revisando que siga legible; la animación se reprodujo
-  fotograma a fotograma con los mismos interpoladores que usan los `animator` XML.
-- **Interfaz**: 116 comprobaciones automatizadas sobre un prototipo navegable
-  (`prototipo-ui.html`, lanzado por `npm run check:ui`), en claro y oscuro: navegación entre pestañas,
-  alta/edición/borrado de gasto, cálculo por persona, asignación de un Bizum,
-  permisos, notificación accionable (asignar, deshacer, "Elegir…"), widgets
-  (saldo, "+" y "Bandeja"), duración de la pantalla de carga, coherencia de la
-  regla de color (marca contra dinero), etiquetas de los tipos de movimiento,
-  reglas de aviso (política por tipo, silenciar un origen y reactivarlo),
-  ausencia de scroll horizontal y de errores de JS.
+  48/32/24/18 px, sobre claro y oscuro, revisando que siga legible; la animación
+  se reprodujo fotograma a fotograma con los mismos interpoladores que usan los
+  `animator` XML.
+- **Paleta del anillo de categorías**: validada con el comprobador de la guía de
+  visualización sobre los dos fondos —banda de luminosidad, croma, separación
+  para daltonismo (protan/deuteran/tritan) y contraste—. Pasa en claro y en
+  oscuro; el aviso de contraste del modo claro queda cubierto por la leyenda,
+  que lleva siempre nombre e importe visibles.
+- **Interfaz**: 166 comprobaciones automatizadas sobre un prototipo navegable
+  (`prototipo-ui.html`, lanzado por `npm run check:ui`), en claro y oscuro:
+  rejilla y buscador, tonalidad de los grupos de ahorro, las dos cifras de un
+  grupo normal, quién pagó y a quién afecta, alta con fecha y con reparto por
+  cantidades (incluido que no deje guardar un reparto que no suma), navegación
+  con doble toque y botón atrás, los papeles de un grupo de ahorro, el anillo de
+  categorías con su leyenda y los filtros de ámbito y periodo, los tres cajones
+  de la bandeja y lo que cada salto le hace a la app de origen, los ajustes
+  plegables con sus tres modos de aprendizaje y el encendido/apagado de apps, la
+  notificación de tres botones que **no** crea nada hasta confirmar, los
+  widgets, la coherencia de la regla de color, ausencia de scroll horizontal y
+  de errores de JS.
 
 > **Céntimos**: repartir 39,90 € entre 4 da 9,975. Redondear cada parte a 9,98
-> hace que las partes sumen 39,92 y el balance del grupo se desvíe. `splitEvenly`
-> reparte el resto de uno en uno entre los primeros miembros, así la suma es
-> exacta. La simulación comprueba que los saldos del grupo suman cero.
+> hace que las partes sumen 39,92 y el balance del grupo se desvíe. Ahora el
+> reparto lo hace el servidor (asignaciones en `RATIO`), y el que se enseña
+> antes de guardar reparte el resto de uno en uno entre los primeros miembros,
+> así la suma es exacta. La simulación comprueba que los saldos del grupo suman
+> cero.
 
 ## Estructura
 
 ```
 data/api/     Modelos, cliente HTTP de la API interna, credenciales cifradas
-data/db/      Room: bandeja de movimientos detectados
+              Split: cómo se reparte un movimiento entre los miembros
+data/db/      Room: bandeja de movimientos detectados, en tres cajones
 data/repo/    Stats: balances, plan de liquidación, gasto por categoría/mes/persona
               MemberIdentity: quién eres tú en cada grupo
-              SavingsGroups: qué grupos son de ahorro y de dónde vienen sus ingresos
+              SavingsGroups: los dos papeles de un grupo de ahorro
+              ArchivedGroups: los archivados, que la API ya no devuelve
 data/cache/   Instantánea de grupos para widgets y notificaciones
-notif/        NotificationListenerService, parser de movimientos, registro de bancos,
-              reglas de aviso, notificación accionable y receptor de acciones
+notif/        NotificationListenerService, parser de movimientos, registro de apps
+              vigiladas, reglas de aviso, notificación accionable
+              AssignPlan: con qué papeles llega un movimiento a la hoja
 widget/       Widgets Glance: saldo del grupo y alta rápida
 ui/           Compose: una pantalla por pestaña, hojas inferiores, componentes y tema
-ui/theme/     Tokens de color (incluida la marca) y tipografía, claro y oscuro
-update/       Canal de actualización: consulta de release, descarga e instalación
+ui/theme/     Tokens de color (marca, tinte de ahorro y paleta del anillo) y tipografía
+update/       Canal de actualización: consulta, descarga, instalación,
+              comprobación diaria en segundo plano y aviso
 branding/     Icono en SVG (color y monocromo)
 util/         Codificador PKCS#1
+sim/          Comprobaciones: payloads, balance, asignación, interfaz y API real
 ```
 
 ## Pendiente / ideas
 
-- Reparto por porcentajes o partes desiguales (la API lo soporta con `type: RATIO`).
-- Adjuntar la foto del ticket (endpoints de attachment ya existen en la API).
+- **Adjuntar la foto del ticket.** La app oficial lo ofrece junto al título, y
+  la API tiene endpoints de attachment, pero su forma no está descifrada: hay
+  que sacarla a base de prueba y error contra el servidor.
+- **Reparto por partes o porcentajes.** La API lo soporta — `RATIO` con
+  `share_ratio` mayor que 1 —, y de hecho ya se usa con `share_ratio: 1` para
+  las partes iguales. Falta la interfaz.
+- **Moneda distinta a la del grupo.** La app oficial deja elegirla en el propio
+  movimiento y guarda el cambio (`exchange_rate`).
 - Auto-asignación aprendida: recordar que "Bizum de Laura" suele ir al grupo "Piso"
   y proponer ese grupo primero en la notificación.
 - Widget configurable para fijar un grupo distinto del activo.

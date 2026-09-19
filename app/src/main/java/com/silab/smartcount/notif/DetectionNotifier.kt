@@ -11,25 +11,35 @@ import com.silab.smartcount.MainActivity
 import com.silab.smartcount.R
 import com.silab.smartcount.data.cache.CachedGroup
 import com.silab.smartcount.data.cache.GroupCache
-import com.silab.smartcount.data.db.DetectedKind
 import com.silab.smartcount.data.db.InboxEntry
 import java.util.Locale
 
 /**
- * Avisa de cada movimiento detectado con una notificación accionable:
- * los grupos aparecen como botones, así que categorizar un Bizum es un solo
- * toque desde la pantalla de bloqueo, sin abrir la app.
+ * Avisa de cada movimiento detectado con una notificación accionable.
+ *
+ * Tres botones, que son las tres cosas que se hacen con un cargo recién
+ * detectado: llevarlo al grupo normal en el que andas metido ahora mismo,
+ * llevarlo al de ahorro, o decidirlo tú.
+ *
+ * **Los tres abren la app con el movimiento ya preparado; ninguno lo envía a
+ * Tricount por su cuenta.** Antes el botón de un grupo creaba el movimiento
+ * desde la pantalla de bloqueo y ofrecía deshacerlo treinta segundos. Era más
+ * rápido, pero un cargo casi nunca llega listo para guardar —hay que mirar
+ * entre quién se reparte, si la descripción del banco vale, si el importe es
+ * el bueno— y lo que se ganaba en un toque se perdía luego corrigiendo desde
+ * dentro. Ahora el botón elige el grupo y la app abre la hoja con esa
+ * elección puesta.
+ *
+ * Son tres y no cuatro porque Android enseña **como mucho tres acciones**: la
+ * cuarta se añade y no se ve. Silenciar un comercio se hace desde la hoja del
+ * movimiento, que es donde se lee su nombre entero.
  */
 object DetectionNotifier {
 
     const val CHANNEL_ID = "movimientos"
     const val EXTRA_ENTRY_ID = "entry_id"
     const val EXTRA_GROUP_ID = "group_id"
-    const val EXTRA_REMOTE_TX = "remote_tx"
     const val ACTION_OPEN_INBOX = "com.silab.smartcount.OPEN_INBOX"
-
-    /** Cuántos grupos caben como botones sin saturar la notificación. */
-    private const val MAX_GROUP_ACTIONS = 2
 
     fun ensureChannel(context: Context) {
         val channel = NotificationChannel(
@@ -57,134 +67,64 @@ object DetectionNotifier {
         else -> "¿A qué grupo lo llevas?"
     }
 
-    /** Los grupos que se ofrecen como botón: el activo primero. */
+    /**
+     * Los dos grupos que se ofrecen: el normal y el de ahorro **más
+     * recientes**.
+     *
+     * Reciente es el último en el que pasó algo, contando tanto su último
+     * movimiento como el día en que entró en la app: un grupo recién añadido
+     * todavía no tiene movimientos y es justo donde vas a querer llevar lo
+     * siguiente. Antes se ofrecía el grupo activo y el que viniera después en
+     * la lista, que no quiere decir nada.
+     */
     fun candidateGroups(cache: GroupCache): List<CachedGroup> {
         val snap = cache.read()
-        val selected = snap.selected
-        return (listOfNotNull(selected) + snap.groups.filter { it.id != selected?.id })
-            .take(MAX_GROUP_ACTIONS)
+        return listOfNotNull(snap.mostRecentNormal, snap.mostRecentSavings)
     }
 
     fun notify(context: Context, entry: InboxEntry) {
         ensureChannel(context)
         val groups = candidateGroups(GroupCache(context))
 
-        val open = PendingIntent.getActivity(
-            context,
-            entry.id.toInt(),
-            Intent(context, MainActivity::class.java).apply {
-                action = ACTION_OPEN_INBOX
-                putExtra(EXTRA_ENTRY_ID, entry.id)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(titleFor(entry))
             .setContentText(bodyFor(entry, groups))
             .setStyle(NotificationCompat.BigTextStyle().bigText(entry.rawText))
-            .setContentIntent(open)
+            .setContentIntent(openIntent(context, entry.id, null))
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
 
         groups.forEach { g ->
-            builder.addAction(
-                0,
-                g.title.take(18),
-                quickAssignIntent(context, entry.id, g.id)
-            )
+            val prefix = if (g.savings) "Ahorro: " else ""
+            builder.addAction(0, prefix + g.title.take(16), openIntent(context, entry.id, g.id))
         }
-        builder.addAction(0, "Elegir…", open)
-        // Silenciar el origen: la vía rápida para las suscripciones, que llegan
-        // como un pago con tarjeta normal y solo se distinguen por el comercio.
-        (entry.merchant ?: entry.counterparty)?.let { source ->
-            builder.addAction(0, "No avisar de ${source.take(14)}", muteIntent(context, entry.id))
-        }
+        builder.addAction(0, "Elegir…", openIntent(context, entry.id, null))
 
         NotificationManagerCompat.from(context)
             .notifySafely(context, entry.id.toInt(), builder.build())
     }
 
-    private fun muteIntent(context: Context, entryId: Long) =
-        PendingIntent.getBroadcast(
+    /**
+     * Abre la app en la bandeja, con este movimiento y —si el botón traía
+     * uno— con ese grupo ya marcado.
+     */
+    private fun openIntent(context: Context, entryId: Long, groupId: Int?): PendingIntent {
+        // Un requestCode distinto por botón: con el mismo, el segundo
+        // PendingIntent reutilizaría los extras del primero y los tres
+        // botones acabarían haciendo lo mismo.
+        val requestCode = (entryId * 10 + (groupId?.rem(7)?.plus(1) ?: 0)).toInt()
+        return PendingIntent.getActivity(
             context,
-            (entryId + 500_000).toInt(),
-            Intent(context, QuickAssignReceiver::class.java).apply {
-                action = QuickAssignReceiver.ACTION_MUTE
+            requestCode,
+            Intent(context, MainActivity::class.java).apply {
+                action = ACTION_OPEN_INBOX
                 putExtra(EXTRA_ENTRY_ID, entryId)
+                groupId?.let { putExtra(EXTRA_GROUP_ID, it) }
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
-    private fun quickAssignIntent(context: Context, entryId: Long, groupId: Int) =
-        PendingIntent.getBroadcast(
-            context,
-            (entryId * 100 + groupId).toInt(),
-            Intent(context, QuickAssignReceiver::class.java).apply {
-                action = QuickAssignReceiver.ACTION_ASSIGN
-                putExtra(EXTRA_ENTRY_ID, entryId)
-                putExtra(EXTRA_GROUP_ID, groupId)
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-    /** Sustituye la notificación por la confirmación, con opción de deshacer. */
-    fun notifyAssigned(context: Context, entry: InboxEntry, group: CachedGroup, remoteTxId: Int) {
-        val undo = PendingIntent.getBroadcast(
-            context,
-            -entry.id.toInt(),
-            Intent(context, QuickAssignReceiver::class.java).apply {
-                action = QuickAssignReceiver.ACTION_UNDO
-                putExtra(EXTRA_ENTRY_ID, entry.id)
-                putExtra(EXTRA_GROUP_ID, group.id)
-                putExtra(EXTRA_REMOTE_TX, remoteTxId)
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val n = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Añadido a «${group.title}»")
-            .setContentText(titleFor(entry))
-            .addAction(0, "Deshacer", undo)
-            .setAutoCancel(true)
-            .setTimeoutAfter(30_000)
-            .build()
-        NotificationManagerCompat.from(context).notifySafely(context, entry.id.toInt(), n)
-    }
-
-    /** Confirma el silenciado y deja deshacerlo, por si fue un toque sin querer. */
-    fun notifyMuted(context: Context, entry: InboxEntry, source: String) {
-        val undo = PendingIntent.getBroadcast(
-            context,
-            (entry.id + 600_000).toInt(),
-            Intent(context, QuickAssignReceiver::class.java).apply {
-                action = QuickAssignReceiver.ACTION_UNMUTE
-                putExtra(EXTRA_ENTRY_ID, entry.id)
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val n = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("«$source» silenciado")
-            .setContentText("No volverá a avisar. Puedes reactivarlo en Ajustes.")
-            .addAction(0, "Deshacer", undo)
-            .setAutoCancel(true)
-            .setTimeoutAfter(30_000)
-            .build()
-        NotificationManagerCompat.from(context).notifySafely(context, entry.id.toInt(), n)
-    }
-
-    fun notifyError(context: Context, entry: InboxEntry, message: String) {
-        val n = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("No se pudo enviar a Tricount")
-            .setContentText(message.take(120))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
-            .setAutoCancel(true)
-            .build()
-        NotificationManagerCompat.from(context).notifySafely(context, entry.id.toInt(), n)
     }
 
     fun cancel(context: Context, entryId: Long) {
@@ -193,7 +133,7 @@ object DetectionNotifier {
 }
 
 /** En Android 13+ publicar sin permiso lanza SecurityException; no queremos morir por eso. */
-private fun NotificationManagerCompat.notifySafely(
+internal fun NotificationManagerCompat.notifySafely(
     context: Context,
     id: Int,
     notification: android.app.Notification

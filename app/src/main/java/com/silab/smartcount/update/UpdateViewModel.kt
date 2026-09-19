@@ -118,6 +118,33 @@ class UpdateViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Lo que hace el botón de la notificación de actualización: comprueba y,
+     * si sigue habiendo versión nueva, empieza a descargarla sin pedir otro
+     * toque. Si ya no la hay —porque se instaló entre medias— lo dice en vez
+     * de abrir una hoja vacía.
+     */
+    fun checkAndStart() {
+        viewModelScope.launch {
+            when (val result = Updater.check(getApplication())) {
+                is Updater.Check.Available -> {
+                    _state.value = _state.value.copy(
+                        phase = UpdatePhase.AVAILABLE,
+                        release = result.release,
+                        canInstall = Updater.canInstall(getApplication())
+                    )
+                    primaryAction()
+                }
+                Updater.Check.UpToDate -> _state.value = _state.value.copy(
+                    manualResult = "Ya estás en la última versión"
+                )
+                is Updater.Check.Failed -> _state.value = _state.value.copy(
+                    manualResult = "No se pudo comprobar · ${result.reason}"
+                )
+            }
+        }
+    }
+
     fun openPermissionSettings() = Updater.openUnknownSourcesSettings(getApplication())
 
     /**

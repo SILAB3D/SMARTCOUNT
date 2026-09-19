@@ -42,7 +42,21 @@ import com.silab.smartcount.data.repo.Savings
 import com.silab.smartcount.ui.theme.DisplayNumber
 import com.silab.smartcount.ui.theme.ScreenPadding
 import com.silab.smartcount.ui.theme.SmartTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.ui.draw.clip
+import com.silab.smartcount.data.api.Split
+import com.silab.smartcount.data.api.TricountClient
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 // ===========================================================================
 // Piezas comunes a todas las pestañas
@@ -139,8 +153,9 @@ internal fun monthLabel(key: String): String {
 // ===========================================================================
 
 /**
- * Lo que la hoja devuelve al guardar. Un solo objeto en vez de seis parámetros
- * sueltos, porque cada tipo de movimiento usa unos campos y no otros.
+ * Lo que la hoja devuelve al guardar. Un solo objeto en vez de ocho
+ * parámetros sueltos, porque cada tipo de movimiento usa unos campos y no
+ * otros.
  */
 data class MovementDraft(
     val kind: TxType,
@@ -150,8 +165,9 @@ data class MovementDraft(
     val owner: Member,
     /** Solo en las transferencias: la otra punta. */
     val counterpart: Member? = null,
-    val splitAmong: List<Member> = emptyList(),
-    val category: Category? = null
+    val split: Split = Split(emptyList()),
+    val category: Category? = null,
+    val date: Date = Date()
 )
 
 internal val TxType.label: String
@@ -160,6 +176,34 @@ internal val TxType.label: String
         TxType.INCOME -> "Ingreso"
         TxType.BALANCE -> "Transferencia"
     }
+
+/** Cómo se reparte: a partes iguales o poniendo tú las cantidades. */
+private enum class SplitMode(val label: String) { EVEN("A partes iguales"), AMOUNTS("Por cantidades") }
+
+/**
+ * El día que elige el calendario viene en UTC a medianoche. Convertirlo con
+ * `Date(millis)` a secas adelanta o atrasa un día según el huso, así que se
+ * extrae el día en UTC y se reconstruye a mediodía local: la fecha que se ve
+ * es la que se guarda, viva uno donde viva.
+ */
+private fun utcDayToLocalDate(millis: Long): Date {
+    val utc = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply { timeInMillis = millis }
+    return Calendar.getInstance().apply {
+        set(utc.get(Calendar.YEAR), utc.get(Calendar.MONTH), utc.get(Calendar.DAY_OF_MONTH), 12, 0, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.time
+}
+
+/** La fecha que trae la API ("yyyy-MM-dd HH:mm:ss.SSSSSS") de vuelta a Date. */
+internal fun parseTxDate(raw: String?): Date? {
+    if (raw.isNullOrBlank()) return null
+    val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSSSS", Locale.US)
+    return runCatching { fmt.parse(raw) }.getOrNull()
+        ?: runCatching { SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(raw.take(10)) }.getOrNull()
+}
+
+private fun formatDay(date: Date): String =
+    SimpleDateFormat("d 'de' MMMM 'de' yyyy", Locale("es", "ES")).format(date)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -174,6 +218,8 @@ fun ExpenseSheet(
     savings: Boolean = false,
     /** De dónde viene el dinero en un grupo de ahorro. */
     incomeMember: Member? = null,
+    /** Quién lo gasta en un grupo de ahorro. */
+    spenderMember: Member? = null,
     onSave: (MovementDraft) -> Unit
 ) {
     val c = SmartTheme.colors
@@ -181,6 +227,7 @@ fun ExpenseSheet(
     val activeMembers = remember(t) { t.members.filter { it.status == "ACTIVE" } }
     val me = remember(t) { t.linkedMember ?: activeMembers.firstOrNull() }
     val income = incomeMember ?: remember(t) { Savings.incomeMember(t) }
+    val spender = spenderMember ?: me
 
     // Al editar, el tipo no se toca: la API edita cada uno por su camino.
     var kind by remember { mutableStateOf(existing?.type ?: TxType.NORMAL) }
@@ -192,9 +239,7 @@ fun ExpenseSheet(
             (existing?.amount?.abs ?: prefillAmount)?.let { String.format(Locale.US, "%.2f", it) } ?: ""
         )
     }
-    var owner by remember {
-        mutableStateOf(t.memberByUuid(existing?.ownerUuid) ?: me)
-    }
+    var owner by remember { mutableStateOf(t.memberByUuid(existing?.ownerUuid) ?: me) }
     var counterpart by remember {
         mutableStateOf(
             existing?.allocations
@@ -210,31 +255,81 @@ fun ExpenseSheet(
         )
     }
     var category by remember { mutableStateOf(Category.fromApi(existing?.category)) }
+    var date by remember { mutableStateOf(parseTxDate(existing?.date) ?: Date()) }
+    var pickingDate by remember { mutableStateOf(false) }
+
+    // Las cantidades escritas a mano, por uuid. Vacío = lo calcula el reparto.
+    var amounts by remember {
+        mutableStateOf<Map<String, String>>(
+            existing?.allocations
+                ?.filter { it.type == "AMOUNT" }
+                ?.associate { it.membershipUuid to String.format(Locale.US, "%.2f", it.amount.abs) }
+                .orEmpty()
+        )
+    }
+    var mode by remember {
+        mutableStateOf(if (amounts.isEmpty()) SplitMode.EVEN else SplitMode.AMOUNTS)
+    }
 
     // En un grupo de ahorro los papeles son fijos: tú gastas, «Ingresos» ingresa.
     val effectiveOwner = when {
         !savings -> owner
         kind == TxType.INCOME -> income ?: owner
-        else -> me ?: owner
+        else -> spender ?: owner
     }
-    val effectiveSplit = when {
-        savings -> listOfNotNull(me)
+    val splitMembers = when {
+        savings -> listOfNotNull(if (kind == TxType.INCOME) spender else spender)
         kind == TxType.BALANCE -> listOfNotNull(counterpart)
-        else -> split.toList()
+        else -> activeMembers.filter { m -> split.any { it.uuid == m.uuid } }
     }
 
     val amount = amountText.replace(',', '.').toDoubleOrNull()
+    val fixed = if (mode == SplitMode.AMOUNTS) {
+        splitMembers.mapNotNull { m ->
+            amounts[m.uuid]?.replace(',', '.')?.toDoubleOrNull()?.let { m.uuid to it }
+        }.toMap()
+    } else {
+        emptyMap<String, Double>()
+    }
+    val draftSplit = Split(splitMembers, fixed)
+
+    // Qué le falta al reparto para cuadrar. La API rechaza un reparto que no
+    // suma el total, así que más vale decirlo aquí que enseñar luego su error.
+    val pending = if (amount == null) 0.0 else draftSplit.remainder(amount)
+    val splitError = when {
+        amount == null || kind == TxType.BALANCE || savings -> null
+        draftSplit.free.isEmpty() && pending > 0.005 -> "Faltan ${formatMoney(pending, t.currency)} por asignar"
+        pending < -0.005 -> "Las partes se pasan en ${formatMoney(-pending, t.currency)}"
+        else -> null
+    }
+
     val valid = description.isNotBlank() && amount != null && amount > 0 &&
-        effectiveOwner != null &&
+        effectiveOwner != null && splitError == null &&
         when (kind) {
             TxType.BALANCE -> counterpart != null && counterpart?.uuid != effectiveOwner.uuid
-            else -> effectiveSplit.isNotEmpty()
+            else -> splitMembers.isNotEmpty()
         }
 
     val title = when {
         existing != null -> "Editar " + kind.label.lowercase()
         kind == TxType.BALANCE -> "Nueva transferencia"
         else -> "Nuevo " + kind.label.lowercase()
+    }
+
+    if (pickingDate) {
+        val pickerState = rememberDatePickerState(initialSelectedDateMillis = date.time)
+        DatePickerDialog(
+            onDismissRequest = { pickingDate = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let { date = utcDayToLocalDate(it) }
+                    pickingDate = false
+                }) { Text("Aceptar", color = c.brand) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pickingDate = false }) { Text("Cancelar", color = c.secondaryText) }
+            }
+        ) { DatePicker(state = pickerState) }
     }
 
     ModalBottomSheet(
@@ -253,11 +348,7 @@ fun ExpenseSheet(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = c.primaryText
-                    )
+                    Text(title, style = MaterialTheme.typography.titleLarge, color = c.primaryText)
                     Text(
                         "Cancelar",
                         color = c.secondaryText,
@@ -287,19 +378,22 @@ fun ExpenseSheet(
 
             item {
                 Column(Modifier.padding(horizontal = ScreenPadding)) {
-                    SmartField(amountText, { amountText = it }, "Importe (" + t.currency + ")", KeyboardType.Decimal)
+                    SmartField(
+                        amountText, { amountText = it },
+                        "Importe (" + t.currency + ")", KeyboardType.Decimal
+                    )
                     Spacer(Modifier.height(12.dp))
                     SmartField(description, { description = it }, "Descripción")
-                    Spacer(Modifier.height(4.dp))
-                    if (amount != null && kind != TxType.BALANCE && effectiveSplit.size > 1) {
-                        Text(
-                            formatMoney(amount / effectiveSplit.size, t.currency) +
-                                " por persona · " + effectiveSplit.size + " personas",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = c.secondaryText,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                    }
+                    Spacer(Modifier.height(12.dp))
+                    // La fecha faltaba: todo movimiento se guardaba con la de
+                    // hoy, así que apuntar el sábado la cena del viernes la
+                    // colocaba en el día equivocado.
+                    SmartRow(
+                        title = "Fecha",
+                        value = formatDay(date),
+                        valueColor = c.secondaryText,
+                        onClick = { pickingDate = true }
+                    )
                 }
             }
 
@@ -307,9 +401,11 @@ fun ExpenseSheet(
                 item {
                     Text(
                         if (kind == TxType.INCOME) {
-                            "Entra al grupo desde «${income?.displayName ?: Savings.INCOME_MEMBER}»."
+                            "Entra al grupo desde «${income?.displayName ?: Savings.INCOME_MEMBER}» " +
+                                "hacia «${spender?.displayName ?: "quien gasta"}»."
                         } else {
-                            "Sale del grupo. Se descuenta de lo ahorrado."
+                            "Sale del grupo a nombre de «${spender?.displayName ?: "quien gasta"}». " +
+                                "Se descuenta de lo ahorrado."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = c.secondaryText,
@@ -359,7 +455,7 @@ fun ExpenseSheet(
                     item {
                         SectionHeader("Repartido entre") {
                             Text(
-                                if (split.size == activeMembers.size) "Quitar todos" else "Seleccionar todos",
+                                if (split.size == activeMembers.size) "Quitar todos" else "Todos",
                                 color = c.secondaryText,
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.clickable {
@@ -375,13 +471,66 @@ fun ExpenseSheet(
                             contentPadding = PaddingValues(horizontal = ScreenPadding),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(activeMembers, key = { it.uuid }) { m ->
-                                PillChip(m.displayName, split.any { it.uuid == m.uuid }) {
-                                    split = if (split.any { it.uuid == m.uuid }) {
-                                        split.filterNot { it.uuid == m.uuid }.toSet()
-                                    } else split + m
+                            items(SplitMode.entries.toList(), key = { it.name }) { option ->
+                                PillChip(option.label, option == mode) {
+                                    mode = option
+                                    if (option == SplitMode.EVEN) amounts = emptyMap()
                                 }
                             }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+
+                    items(activeMembers, key = { "split-" + it.uuid }) { m ->
+                        val included = split.any { it.uuid == m.uuid }
+                        val shareText = when {
+                            !included -> "—"
+                            mode == SplitMode.AMOUNTS -> null   // lo pone el campo
+                            amount == null -> "—"
+                            else -> {
+                                val i = splitMembers.indexOfFirst { it.uuid == m.uuid }
+                                val parts = TricountClient.previewSplit(amount, splitMembers.size)
+                                formatMoney(parts.getOrElse(i) { 0.0 }, t.currency)
+                            }
+                        }
+                        MemberSplitRow(
+                            member = m,
+                            included = included,
+                            currency = t.currency,
+                            shareText = shareText,
+                            amountText = amounts[m.uuid].orEmpty(),
+                            editable = mode == SplitMode.AMOUNTS,
+                            onToggle = {
+                                split = if (included) {
+                                    amounts = amounts - m.uuid
+                                    split.filterNot { it.uuid == m.uuid }.toSet()
+                                } else {
+                                    split + m
+                                }
+                            },
+                            onAmountChange = { raw ->
+                                amounts = if (raw.isBlank()) amounts - m.uuid else amounts + (m.uuid to raw)
+                                if (raw.isNotBlank() && !included) split = split + m
+                            }
+                        )
+                        SmartDivider()
+                    }
+
+                    if (mode == SplitMode.AMOUNTS) {
+                        item {
+                            val free = draftSplit.free.size
+                            Text(
+                                when {
+                                    splitError != null -> splitError
+                                    free > 0 && pending > 0.005 ->
+                                        "${formatMoney(pending, t.currency)} para " +
+                                            (if (free == 1) "el que queda" else "los $free que quedan")
+                                    else -> "Deja en blanco a quien deba repartirse lo que sobre."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (splitError != null) c.negative else c.secondaryText,
+                                modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 10.dp)
+                            )
                         }
                     }
                 }
@@ -420,8 +569,9 @@ fun ExpenseSheet(
                                 amount = amount!!,
                                 owner = effectiveOwner!!,
                                 counterpart = counterpart,
-                                splitAmong = effectiveSplit,
-                                category = category
+                                split = draftSplit,
+                                category = category,
+                                date = date
                             )
                         )
                     }
@@ -438,6 +588,82 @@ fun ExpenseSheet(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Una persona en el reparto: si entra, y con cuánto. El campo de cantidad solo
+ * aparece en el reparto por cantidades; en el igualitario se enseña lo que le
+ * toca, que es información y no un campo que invite a tocarlo.
+ */
+@Composable
+private fun MemberSplitRow(
+    member: Member,
+    included: Boolean,
+    currency: String,
+    shareText: String?,
+    amountText: String,
+    editable: Boolean,
+    onToggle: () -> Unit,
+    onAmountChange: (String) -> Unit
+) {
+    val c = SmartTheme.colors
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = ScreenPadding, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(22.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(if (included) c.chipSelected else c.chipBackground)
+                .clickable(onClick = onToggle),
+            contentAlignment = Alignment.Center
+        ) {
+            if (included) {
+                Text("✓", color = c.chipSelectedText, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            member.displayName,
+            style = MaterialTheme.typography.titleMedium,
+            color = if (included) c.primaryText else c.secondaryText,
+            maxLines = 1,
+            modifier = Modifier.weight(1f).clickable(onClick = onToggle)
+        )
+        if (editable) {
+            Box(Modifier.width(120.dp)) {
+                OutlinedTextField(
+                    value = amountText,
+                    onValueChange = onAmountChange,
+                    placeholder = {
+                        Text("auto", color = c.secondaryText, style = MaterialTheme.typography.bodySmall)
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = c.chipBackground,
+                        unfocusedContainerColor = c.chipBackground,
+                        focusedBorderColor = c.brand,
+                        unfocusedBorderColor = Color.Transparent,
+                        focusedTextColor = c.primaryText,
+                        unfocusedTextColor = c.primaryText,
+                        cursorColor = c.brand
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        } else {
+            Text(
+                shareText ?: "—",
+                style = MaterialTheme.typography.titleMedium,
+                color = if (included) c.primaryText else c.secondaryText
+            )
         }
     }
 }
@@ -533,6 +759,56 @@ internal fun MemberPickerSheet(
                     onClick = { onPick(m) }
                 )
                 SmartDivider()
+            }
+        }
+    }
+}
+
+/**
+ * Una hoja para escribir una cosa, o dos cuando hacen juego —el nombre de un
+ * grupo y su emoji—. Se repite tanto (renombrar grupo, renombrar miembro,
+ * añadir miembro, tu nombre en el banco) que tenerla suelta cuatro veces era
+ * cuatro sitios donde arreglar lo mismo.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun TextPromptSheet(
+    title: String,
+    body: String,
+    initial: String,
+    label: String = "Nombre",
+    secondaryLabel: String? = null,
+    secondaryInitial: String = "",
+    confirmLabel: String = "Guardar",
+    onDismiss: () -> Unit,
+    onConfirm: (String, String?) -> Unit
+) {
+    val c = SmartTheme.colors
+    var value by remember { mutableStateOf(initial) }
+    var secondary by remember { mutableStateOf(secondaryInitial) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.background, dragHandle = null) {
+        Column(Modifier.padding(ScreenPadding)) {
+            Text(title, style = MaterialTheme.typography.titleLarge, color = c.primaryText)
+            Spacer(Modifier.height(8.dp))
+            Text(body, style = MaterialTheme.typography.bodyMedium, color = c.secondaryText)
+            Spacer(Modifier.height(20.dp))
+            SmartField(value, { value = it }, label)
+            if (secondaryLabel != null) {
+                Spacer(Modifier.height(12.dp))
+                SmartField(secondary, { secondary = it }, secondaryLabel)
+            }
+            Spacer(Modifier.height(20.dp))
+            PrimaryButton(confirmLabel, value.isNotBlank()) {
+                onConfirm(value.trim(), secondaryLabel?.let { secondary.trim() })
+            }
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    "Cancelar",
+                    color = c.secondaryText,
+                    modifier = Modifier.clickable(onClick = onDismiss).padding(14.dp)
+                )
             }
         }
     }

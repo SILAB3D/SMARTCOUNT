@@ -40,11 +40,22 @@ data class SmartColors(
     val secondaryText: Color,
     val divider: Color,
     val chipBackground: Color,
+    /** Fondo de la ficha de un grupo de ahorro: el mismo gris, teñido de marca. */
+    val savingsTint: Color,
     val chipSelected: Color,
     val chipSelectedText: Color,
     val brand: Color,
     val positive: Color = Green,
     val negative: Color = Red,
+    /**
+     * Los colores de las porciones del gráfico de categorías, en orden fijo.
+     *
+     * Van aparte del verde y el rojo del dinero a propósito: aquí el color
+     * identifica una categoría, no dice si algo es bueno o malo. El orden no
+     * se recicla —la sexta categoría y las siguientes se funden en «Otros»— y
+     * los dos juegos están comprobados para daltonismo sobre su fondo.
+     */
+    val chartSeries: List<Color>,
     val isDark: Boolean
 )
 
@@ -55,9 +66,14 @@ private val DarkColors = SmartColors(
     secondaryText = Color(0xFF8A8A8E),
     divider = Color(0xFF1C1C1E),
     chipBackground = Color(0xFF161618),
+    savingsTint = Color(0xFF14192E),
     chipSelected = Color(0xFFFFFFFF),
     chipSelectedText = Color(0xFF000000),
     brand = BrandDark,
+    chartSeries = listOf(
+        Color(0xFF3987E5), Color(0xFFD95926), Color(0xFF199E70),
+        Color(0xFFC98500), Color(0xFFD55181), Color(0xFF008300)
+    ),
     isDark = true
 )
 
@@ -68,9 +84,14 @@ private val LightColors = SmartColors(
     secondaryText = Color(0xFF74747A),
     divider = Color(0xFFEDEDF0),
     chipBackground = Color(0xFFF2F2F4),
+    savingsTint = Color(0xFFEBEFFF),
     chipSelected = Color(0xFF07070A),
     chipSelectedText = Color(0xFFFFFFFF),
     brand = BrandLight,
+    chartSeries = listOf(
+        Color(0xFF2A78D6), Color(0xFFEB6834), Color(0xFF1BAF7A),
+        Color(0xFFEDA100), Color(0xFFE87BA4), Color(0xFF008300)
+    ),
     isDark = false
 )
 

@@ -7,13 +7,15 @@ import com.silab.smartcount.SmartCountApp
 import com.silab.smartcount.data.api.Category
 import com.silab.smartcount.data.api.Member
 import com.silab.smartcount.data.api.SettlementLeg
+import com.silab.smartcount.data.api.Split
 import com.silab.smartcount.data.api.Transaction
 import com.silab.smartcount.data.api.Tricount
 import com.silab.smartcount.data.api.TricountClient
 import com.silab.smartcount.data.api.TxType
-import com.silab.smartcount.data.db.DetectedKind
+import com.silab.smartcount.data.db.InboxClass
 import com.silab.smartcount.data.db.InboxEntry
 import com.silab.smartcount.data.db.InboxStatus
+import com.silab.smartcount.data.repo.ArchivedGroups
 import com.silab.smartcount.data.repo.Savings
 import com.silab.smartcount.data.repo.SavingsSummary
 import com.silab.smartcount.notif.DetectionNotifier
@@ -40,7 +42,9 @@ data class UiState(
      * ahorro tiene que devolverte a la rejilla de ahorro, no a la de grupos.
      */
     val openGroupId: Int? = null,
-    val openSavingsId: Int? = null
+    val openSavingsId: Int? = null,
+    /** Los archivados, que la API ya no devuelve y solo viven anotados aquí. */
+    val archived: List<ArchivedGroups.Entry> = emptyList()
 ) {
     val selected: Tricount? get() = tricounts.firstOrNull { it.id == selectedId }
 
@@ -51,6 +55,9 @@ data class UiState(
 
     val savingsGroups: List<Tricount> get() = tricounts.filter { isSavings(it.id) }
 }
+
+/** Qué movimiento de la bandeja hay que abrir, y con qué grupo ya elegido. */
+data class InboxFocus(val entryId: Long, val groupId: Int? = null)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -65,6 +72,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val cache = appCtx.groupCache
     private val savings = appCtx.savingsGroups
     private val identity = appCtx.memberIdentity
+    private val archive = appCtx.archivedGroups
+    private val registry = appCtx.bankRegistry
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -73,8 +82,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _newExpenseRequests = MutableStateFlow(0)
     val newExpenseRequests: StateFlow<Int> = _newExpenseRequests.asStateFlow()
 
-    private val _focusedEntry = MutableStateFlow<Long?>(null)
-    val focusedEntry: StateFlow<Long?> = _focusedEntry.asStateFlow()
+    private val _focusedEntry = MutableStateFlow<InboxFocus?>(null)
+    val focusedEntry: StateFlow<InboxFocus?> = _focusedEntry.asStateFlow()
 
     /** Las cifras de un grupo de ahorro, con la fuente de ingresos elegida. */
     fun savingsSummary(t: Tricount): SavingsSummary = savings.summary(t)
@@ -85,6 +94,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun incomeMember(t: Tricount): Member? = savings.incomeMember(t)
 
+    /** Quién saca el dinero en un grupo de ahorro. */
+    fun spenderMember(t: Tricount): Member? = savings.spenderMember(t)
+
     /** ¿Este movimiento entra al grupo (verde) o sale de él (rojo)? */
     fun isIncome(t: Tricount, tx: Transaction): Boolean = savings.isIncome(t, tx)
 
@@ -92,14 +104,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** La señal es de un solo uso: quien abre la hoja de alta la apaga. */
     fun consumeNewExpense() { _newExpenseRequests.value = 0 }
-    fun focusInboxEntry(id: Long?) { _focusedEntry.value = id }
+    fun focusInboxEntry(focus: InboxFocus?) { _focusedEntry.value = focus }
 
     val inbox: StateFlow<List<InboxEntry>> =
         dao.observeByStatus(InboxStatus.PENDING)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** Lo ya enviado, para poder mirar atrás sin salir de la bandeja. */
+    val inboxHistory: StateFlow<List<InboxEntry>> =
+        dao.observeHistory()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     init {
-        _state.value = _state.value.copy(savingsIds = savings.ids())
+        _state.value = _state.value.copy(savingsIds = savings.ids(), archived = archive.all())
         refresh()
     }
 
@@ -145,76 +162,177 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(error = null, message = null)
     }
 
+    // -----------------------------------------------------------------------
+    // Grupos
+    // -----------------------------------------------------------------------
+
     /** Añade un grupo pegando su enlace público de Tricount. */
     fun addByLink(link: String) = launchGuarded {
         val token = TricountClient.extractPublicToken(link)
             ?: throw IllegalArgumentException("No reconozco ese enlace de Tricount")
         _state.value = _state.value.copy(loading = true)
         val joined = client.joinTricount(token)
+        archive.forget(token)
         val list = client.listTricounts()
         _state.value = _state.value.copy(
             loading = false,
             tricounts = list,
             selectedId = joined.id,
+            archived = archive.all(),
             message = "Grupo «${joined.title}» añadido"
         )
+        syncCache(list, joined.id)
     }
 
-    fun addExpense(
-        tricount: Tricount,
-        description: String,
-        amount: Double,
-        payer: Member,
-        splitAmong: List<Member>,
-        category: Category?,
-        date: Date = Date()
-    ) = launchGuarded {
-        client.createExpense(tricount, description, amount, payer, splitAmong, category, date = date)
-        _state.value = _state.value.copy(message = "Gasto añadido")
+    /** Crea un grupo nuevo, con sus miembros si los hay. */
+    fun createGroup(title: String, currency: String, memberNames: List<String>) = launchGuarded {
+        require(title.isNotBlank()) { "El grupo necesita un nombre" }
+        _state.value = _state.value.copy(loading = true)
+        val id = client.createTricount(title, currency, memberNames = memberNames)
+        val list = client.listTricounts()
+        _state.value = _state.value.copy(
+            loading = false,
+            tricounts = list,
+            selectedId = id,
+            openGroupId = id,
+            message = "Grupo «$title» creado"
+        )
+        syncCache(list, id)
+    }
+
+    fun renameGroup(tricount: Tricount, title: String) = launchGuarded {
+        client.updateTricount(tricount, title = title)
+        _state.value = _state.value.copy(message = "Ahora se llama «${title.trim()}»")
         refreshQuiet()
     }
+
+    fun setGroupEmoji(tricount: Tricount, emoji: String) = launchGuarded {
+        client.updateTricount(tricount, emoji = emoji)
+        refreshQuiet()
+    }
+
+    fun addMembers(tricount: Tricount, names: List<String>) = launchGuarded {
+        client.addMembers(tricount, names)
+        _state.value = _state.value.copy(
+            message = if (names.size == 1) "«${names.first()}» está dentro" else "${names.size} miembros añadidos"
+        )
+        refreshQuiet()
+    }
+
+    fun renameMember(tricount: Tricount, member: Member, name: String) = launchGuarded {
+        client.renameMember(tricount, member, name)
+        _state.value = _state.value.copy(message = "Ahora es «${name.trim()}»")
+        refreshQuiet()
+    }
+
+    /**
+     * Archiva el grupo. Se anota antes de archivarlo porque después la API ya
+     * no lo devuelve: sin el enlace guardado aquí no habría forma de volver.
+     */
+    fun archiveGroup(tricount: Tricount) = launchGuarded {
+        archive.remember(tricount)
+        client.setArchived(tricount, true)
+        val list = client.listTricounts()
+        _state.value = _state.value.copy(
+            tricounts = list,
+            openGroupId = null,
+            openSavingsId = null,
+            archived = archive.all(),
+            message = "«${tricount.title}» archivado"
+        )
+        syncCache(list, _state.value.selectedId)
+    }
+
+    fun restoreGroup(entry: ArchivedGroups.Entry) = launchGuarded {
+        client.restoreArchived(entry.token)
+        archive.forget(entry.token)
+        val list = client.listTricounts()
+        _state.value = _state.value.copy(
+            tricounts = list,
+            archived = archive.all(),
+            message = "«${entry.title}» vuelve a estar a la vista"
+        )
+        syncCache(list, _state.value.selectedId)
+    }
+
+    /** Lo quita de esta app. El grupo sigue existiendo para los demás. */
+    fun removeGroup(tricount: Tricount) = launchGuarded {
+        client.unsyncTricount(tricount)
+        savings.mark(tricount.id, false)
+        val list = client.listTricounts()
+        _state.value = _state.value.copy(
+            tricounts = list,
+            savingsIds = savings.ids(),
+            openGroupId = null,
+            openSavingsId = null,
+            message = "«${tricount.title}» ya no está en SmartCount"
+        )
+        syncCache(list, _state.value.selectedId)
+    }
+
+    // -----------------------------------------------------------------------
+    // Movimientos
+    // -----------------------------------------------------------------------
 
     /** Alta de cualquiera de los tres tipos, según lo que traiga la hoja. */
-    fun addMovement(tricount: Tricount, draft: MovementDraft) = when (draft.kind) {
-        TxType.NORMAL -> addExpense(
-            tricount, draft.description, draft.amount, draft.owner, draft.splitAmong, draft.category
-        )
-        TxType.INCOME -> addIncome(
-            tricount, draft.description, draft.amount, draft.owner, draft.splitAmong, draft.category
-        )
-        TxType.BALANCE -> addTransfer(
-            tricount, draft.description, draft.amount, draft.owner,
-            draft.counterpart ?: draft.owner
-        )
-    }
-
-    /** Ingreso: dinero que entra al grupo (tipo INCOME). */
-    fun addIncome(
-        tricount: Tricount,
-        description: String,
-        amount: Double,
-        receiver: Member,
-        splitAmong: List<Member>,
-        category: Category?,
-        date: Date = Date()
-    ) = launchGuarded {
-        client.createIncome(tricount, description, amount, receiver, splitAmong, category, date = date)
-        _state.value = _state.value.copy(message = "Ingreso añadido")
+    fun addMovement(tricount: Tricount, draft: MovementDraft) = launchGuarded {
+        when (draft.kind) {
+            TxType.NORMAL -> client.createExpense(
+                tricount, draft.description, draft.amount, draft.owner,
+                effectiveSplit(tricount, draft), draft.category, date = draft.date
+            )
+            TxType.INCOME -> client.createIncome(
+                tricount, draft.description, draft.amount, draft.owner,
+                effectiveSplit(tricount, draft), draft.category, date = draft.date
+            )
+            TxType.BALANCE -> client.createReimbursement(
+                tricount, draft.owner,
+                draft.counterpart ?: throw IllegalArgumentException("Elige a quién va el dinero"),
+                draft.amount, draft.description, draft.date
+            )
+        }
+        _state.value = _state.value.copy(message = "${draft.kind.label} añadido")
         refreshQuiet()
     }
 
-    /** Transferencia entre dos miembros: el tipo BALANCE de Tricount. */
-    fun addTransfer(
-        tricount: Tricount,
-        description: String,
-        amount: Double,
-        from: Member,
-        to: Member,
-        date: Date = Date()
-    ) = launchGuarded {
-        require(from.uuid != to.uuid) { "Una transferencia necesita dos personas distintas" }
-        client.createReimbursement(tricount, from, to, amount, description, date = date)
-        _state.value = _state.value.copy(message = "Transferencia añadida")
+    fun editMovement(tricount: Tricount, tx: Transaction, draft: MovementDraft) = launchGuarded {
+        client.editTransaction(
+            tricount, tx,
+            description = draft.description,
+            amount = draft.amount,
+            owner = draft.owner,
+            split = if (tx.type == TxType.BALANCE) null else effectiveSplit(tricount, draft),
+            counterpart = draft.counterpart,
+            category = draft.category,
+            date = draft.date
+        )
+        _state.value = _state.value.copy(message = "${draft.kind.label} actualizado")
+        refreshQuiet()
+    }
+
+    /**
+     * En un grupo de ahorro los dos papeles mandan sobre lo que traiga la
+     * hoja: un gasto es de quien gasta hacia quien gasta, y un ingreso va de
+     * la fuente de ingresos hacia quien gasta. Se impone aquí, en el único
+     * sitio por el que pasan todas las altas, y no en cada pantalla: así lo
+     * cumplen también la bandeja y la notificación, que antes creaban en un
+     * grupo de ahorro un gasto repartido como en cualquier otro grupo.
+     */
+    private fun effectiveSplit(tricount: Tricount, draft: MovementDraft): Split {
+        if (!savings.isSavings(tricount.id)) return draft.split
+        val spender = savings.spenderMember(tricount)
+            ?: throw IllegalStateException("Falta decir quién gasta en «${tricount.title}»")
+        return Split(listOf(spender))
+    }
+
+    /** Quién es el propietario que corresponde en un grupo de ahorro. */
+    fun savingsOwner(tricount: Tricount, income: Boolean): Member? =
+        if (income) savings.incomeMember(tricount) else savings.spenderMember(tricount)
+
+    fun deleteExpense(tricount: Tricount, tx: Transaction) = launchGuarded {
+        val id = tx.id ?: throw IllegalStateException("El movimiento no tiene id")
+        client.deleteTransaction(tricount, id)
+        _state.value = _state.value.copy(message = "Movimiento eliminado")
         refreshQuiet()
     }
 
@@ -276,6 +394,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         syncCache(_state.value.tricounts, _state.value.selectedId)
     }
 
+    /** Y quién saca el dinero. */
+    fun setSpenderMember(tricount: Tricount, member: Member) = launchGuarded {
+        savings.setSpenderMember(tricount.id, member.uuid)
+        _state.value = _state.value.copy(
+            savingsIds = savings.ids(),
+            message = "Los gastos de «${tricount.title}» van a nombre de «${member.displayName}»"
+        )
+        syncCache(_state.value.tricounts, _state.value.selectedId)
+    }
+
     // -----------------------------------------------------------------------
     // Grupos de ahorro
     // -----------------------------------------------------------------------
@@ -303,56 +431,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refreshQuiet()
     }
 
-    fun editExpense(
-        tricount: Tricount,
-        tx: Transaction,
-        description: String,
-        amount: Double,
-        payer: Member,
-        splitAmong: List<Member>,
-        category: Category?
-    ) = launchGuarded {
-        client.editTransaction(
-            tricount, tx,
-            description = description,
-            amount = amount,
-            payer = payer,
-            splitAmong = splitAmong,
-            category = category
-        )
-        _state.value = _state.value.copy(message = "Gasto actualizado")
-        refreshQuiet()
-    }
-
-    fun deleteExpense(tricount: Tricount, tx: Transaction) = launchGuarded {
-        val id = tx.id ?: throw IllegalStateException("Gasto sin id")
-        client.deleteTransaction(tricount, id)
-        _state.value = _state.value.copy(message = "Gasto eliminado")
-        refreshQuiet()
-    }
-
     // -----------------------------------------------------------------------
-    // Bandeja de Bizum
+    // Bandeja
     // -----------------------------------------------------------------------
-
-    /**
-     * Envía un movimiento detectado a un grupo.
-     * - Bizum a otra persona del grupo → reembolso (tipo BALANCE).
-     * - Bizum/pago a un tercero → gasto repartido.
-     */
-    fun pushInboxEntry(
-        entry: InboxEntry,
-        tricount: Tricount,
-        asReimbursement: Boolean,
-        payer: Member,
-        receiverOrSplit: List<Member>,
-        description: String,
-        amount: Double,
-        category: Category?
-    ) = pushInboxEntry(
-        entry, listOf(TargetGroup(tricount, asReimbursement, payer, receiverOrSplit)),
-        description, amount, category
-    )
 
     /**
      * A qué grupo va el movimiento y con qué papeles. Un mismo cargo puede ir a
@@ -369,6 +450,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pushInboxEntry(
         entry: InboxEntry,
+        tricount: Tricount,
+        asReimbursement: Boolean,
+        payer: Member,
+        receiverOrSplit: List<Member>,
+        description: String,
+        amount: Double,
+        category: Category?
+    ) = pushInboxEntry(
+        entry, listOf(TargetGroup(tricount, asReimbursement, payer, receiverOrSplit)),
+        description, amount, category
+    )
+
+    fun pushInboxEntry(
+        entry: InboxEntry,
         targets: List<TargetGroup>,
         description: String,
         amount: Double,
@@ -379,15 +474,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         var lastGroup: Tricount? = null
         targets.forEach { target ->
             val t = target.tricount
-            lastId = if (target.asReimbursement) {
-                val receiver = target.receiverOrSplit.firstOrNull()
-                    ?: throw IllegalArgumentException("Elige quién recibe el dinero en «${t.title}»")
-                client.createReimbursement(
-                    t, target.payer, receiver, amount, description, Date(entry.detectedAt)
-                )
-            } else {
-                client.createExpense(
-                    t, description, amount, target.payer, target.receiverOrSplit,
+            lastId = when {
+                // En un grupo de ahorro mandan los papeles del grupo, no lo
+                // que dijera la hoja: un cargo del banco es dinero que sale.
+                savings.isSavings(t.id) -> {
+                    val spender = savings.spenderMember(t)
+                        ?: throw IllegalStateException("Falta decir quién gasta en «${t.title}»")
+                    val income = entry.kind.isMoneyIn
+                    if (income) {
+                        val from = savings.incomeMember(t)
+                            ?: throw IllegalStateException("Falta la fuente de ingresos de «${t.title}»")
+                        client.createIncome(
+                            t, description, amount, from, Split(listOf(spender)),
+                            category, date = Date(entry.detectedAt)
+                        )
+                    } else {
+                        client.createExpense(
+                            t, description, amount, spender, Split(listOf(spender)),
+                            category, date = Date(entry.detectedAt)
+                        )
+                    }
+                }
+                target.asReimbursement -> {
+                    val receiver = target.receiverOrSplit.firstOrNull()
+                        ?: throw IllegalArgumentException("Elige quién recibe el dinero en «${t.title}»")
+                    client.createReimbursement(
+                        t, target.payer, receiver, amount, description, Date(entry.detectedAt)
+                    )
+                }
+                else -> client.createExpense(
+                    t, description, amount, target.payer, Split(target.receiverOrSplit),
                     category, date = Date(entry.detectedAt)
                 )
             }
@@ -402,7 +518,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 tricountId = lastGroup?.id,
                 remoteTxId = lastId,
                 amount = amount,
-                userMovement = true
+                userClass = InboxClass.BANK
             )
         )
         DetectionNotifier.cancel(appCtx, entry.id)
@@ -417,14 +533,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Calibración: marcar una notificación como movimiento bancario o como que
-     * no lo es. No borra nada — solo cambia de grupo en la bandeja, para poder
-     * volver atrás si la decisión fue equivocada.
+     * Mueve una notificación de cajón.
+     *
+     * Los dos saltos que tocan la vigilancia lo hacen a propósito: lo que
+     * marcas como movimiento bancario trae consigo a su app —si notificó uno,
+     * notificará más—, y lo que marcas como no bancario la apaga, que es la
+     * única forma de que deje de aparecer. Las dos cosas se deshacen en
+     * Ajustes.
      */
-    fun setBankMovement(entry: InboxEntry, isMovement: Boolean) = launchGuarded {
-        dao.update(entry.copy(userMovement = isMovement))
+    fun classifyInboxEntry(entry: InboxEntry, target: InboxClass) = launchGuarded {
+        dao.update(entry.copy(userClass = target))
+        when (target) {
+            InboxClass.BANK -> registry.add(entry.sourcePackage)
+            InboxClass.NON_BANK -> registry.stopWatching(entry.sourcePackage)
+            InboxClass.OTHER -> Unit
+        }
         cache.savePendingCount(dao.countPending())
         SmartWidgets.refresh(appCtx)
+        _state.value = _state.value.copy(
+            message = when (target) {
+                InboxClass.BANK -> "Se vigilará «${registry.label(entry.sourcePackage)}»"
+                InboxClass.NON_BANK -> "Se deja de seguir «${registry.label(entry.sourcePackage)}»"
+                InboxClass.OTHER -> "Movido a otros eventos"
+            }
+        )
     }
 
     fun ignoreInboxEntry(entry: InboxEntry) = launchGuarded {
@@ -443,12 +575,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(message = "«$source» silenciado")
         syncCache(_state.value.tricounts, _state.value.selectedId)
     }
-
-    /** Sugerencia de si un movimiento parece un reembolso entre miembros. */
-    fun looksLikeReimbursement(entry: InboxEntry): Boolean = entry.kind in setOf(
-        DetectedKind.BIZUM_SENT, DetectedKind.BIZUM_RECEIVED,
-        DetectedKind.TRANSFER_SENT, DetectedKind.TRANSFER_RECEIVED
-    )
 
     // -----------------------------------------------------------------------
 

@@ -1,9 +1,11 @@
 package com.silab.smartcount
 
+import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -53,6 +55,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +64,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silab.smartcount.ui.GroupsScreen
+import com.silab.smartcount.ui.InboxFocus
 import com.silab.smartcount.ui.InboxScreen
 import com.silab.smartcount.ui.MainViewModel
 import com.silab.smartcount.ui.SavingsScreen
@@ -101,7 +105,7 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Rutas de entrada: compartir un enlace de Tricount, el widget "+ Gasto"
-     * y el toque en la notificación de movimiento detectado.
+     * y los botones de la notificación de movimiento detectado.
      */
     private fun handleShare(intent: Intent?) {
         when (intent?.action) {
@@ -111,10 +115,15 @@ class MainActivity : ComponentActivity() {
                 startTab.value = "groups"
                 vm.requestNewExpense()
             }
+            // El aviso de versión nueva: abre la app y empieza la descarga.
+            ACTION_UPDATE -> updateVm.checkAndStart()
             ACTION_OPEN_INBOX -> {
                 startTab.value = "inbox"
                 val entryId = intent.getLongExtra(DetectionNotifier.EXTRA_ENTRY_ID, -1)
-                vm.focusInboxEntry(if (entryId >= 0) entryId else null)
+                val groupId = intent.getIntExtra(DetectionNotifier.EXTRA_GROUP_ID, -1)
+                vm.focusInboxEntry(
+                    if (entryId >= 0) InboxFocus(entryId, groupId.takeIf { it >= 0 }) else null
+                )
             }
         }
     }
@@ -123,11 +132,15 @@ class MainActivity : ComponentActivity() {
         private const val SPLASH_MILLIS = 1000L
         const val ACTION_NEW_EXPENSE = "com.silab.smartcount.NEW_EXPENSE"
         const val ACTION_OPEN_INBOX = "com.silab.smartcount.OPEN_INBOX"
+        const val ACTION_UPDATE = "com.silab.smartcount.UPDATE"
     }
 }
 
 /** Cuánto aguanta el aviso inferior si nadie lo toca. */
 private const val TOAST_MILLIS = 10_000L
+
+/** Dos toques seguidos en la misma pestaña, si caben en este tiempo. */
+private const val DOUBLE_TAP_MILLIS = 400L
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     GROUPS("Grupos", Icons.Outlined.People),
@@ -148,6 +161,7 @@ fun AppRoot(
     val inbox by vm.inbox.collectAsStateWithLifecycle()
     val update by updateVm.state.collectAsStateWithLifecycle()
     var tab by remember { mutableStateOf(Tab.GROUPS) }
+    val activity = LocalContext.current as? Activity
 
     // Comprobación silenciosa del arranque: si falla, no molesta a nadie.
     LaunchedEffect(Unit) { updateVm.checkOnLaunch() }
@@ -172,6 +186,29 @@ fun AppRoot(
         startTab.value = null
     }
     var toast by remember { mutableStateOf<String?>(null) }
+
+    /**
+     * Volver a la ventana principal de una pestaña. Hoy solo Grupos y Ahorro
+     * tienen una segunda ventana — el grupo abierto —; las hojas inferiores se
+     * cierran solas porque el sistema les entrega el gesto antes que a nadie.
+     */
+    fun popToRoot(which: Tab): Boolean = when {
+        which == Tab.GROUPS && state.openGroupId != null -> { vm.openGroup(null); true }
+        which == Tab.SAVINGS && state.openSavingsId != null -> { vm.openSavings(null); true }
+        else -> false
+    }
+
+    /**
+     * Atrás: una ventana menos de la pestaña en la que estés y, si ya estabas
+     * en su ventana principal, se cierra la app.
+     *
+     * Las hojas inferiores no pasan por aquí: `ModalBottomSheet` consume el
+     * gesto mientras está abierta, así que cerrar la hoja es el primer paso
+     * atrás y este es el segundo, que es justo el orden que se espera.
+     */
+    BackHandler {
+        if (!popToRoot(tab)) activity?.finish()
+    }
 
     // Recoger el mensaje y retirarlo son dos efectos separados a propósito:
     // clearMessages() cambia las claves de este efecto, así que un delay aquí
@@ -242,7 +279,11 @@ fun AppRoot(
                 // movimiento, contarlo todo llenaría la chapa de avisos
                 // comerciales que nadie va a asignar.
                 inboxCount = inbox.count { it.isBankMovement },
-                onSelect = { tab = it }
+                onSelect = { tab = it },
+                // Cada pestaña recuerda dónde la dejaste, así que hace falta
+                // una forma rápida de volver a su principio sin ir tocando
+                // flechas: dos toques en su icono.
+                onReselect = { popToRoot(it) }
             )
         }
 
@@ -273,8 +314,19 @@ fun AppRoot(
 }
 
 @Composable
-private fun BottomTabs(selected: Tab, inboxCount: Int, onSelect: (Tab) -> Unit) {
+private fun BottomTabs(
+    selected: Tab,
+    inboxCount: Int,
+    onSelect: (Tab) -> Unit,
+    onReselect: (Tab) -> Unit
+) {
     val c = SmartTheme.colors
+    // El doble toque se reconoce aquí y no con un detector de gestos porque
+    // el primer toque tiene que cambiar de pestaña ya: esperar a ver si llega
+    // el segundo metería un retardo perceptible en el gesto más frecuente.
+    var lastTab by remember { mutableStateOf<Tab?>(null) }
+    var lastTapAt by remember { mutableStateOf(0L) }
+
     Column {
         Box(Modifier.fillMaxWidth().height(1.dp).background(c.divider))
         Row(
@@ -295,7 +347,14 @@ private fun BottomTabs(selected: Tab, inboxCount: Int, onSelect: (Tab) -> Unit) 
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
-                        ) { onSelect(t) }
+                        ) {
+                            val now = SystemClock.uptimeMillis()
+                            val doubleTap = t == lastTab && now - lastTapAt < DOUBLE_TAP_MILLIS
+                            lastTab = t
+                            lastTapAt = now
+                            onSelect(t)
+                            if (doubleTap) onReselect(t)
+                        }
                         .padding(vertical = 4.dp)
                 ) {
                     Box {

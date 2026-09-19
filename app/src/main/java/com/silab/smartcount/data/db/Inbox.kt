@@ -11,6 +11,8 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 enum class DetectedKind {
@@ -53,6 +55,32 @@ enum class DetectedKind {
         }
 }
 
+/**
+ * Los tres cajones de la bandeja.
+ *
+ * Antes eran dos —movimiento y no movimiento— y eso obligaba a meter en el
+ * mismo sitio dos cosas que no se parecen: el aviso de una app de banco que
+ * resultó no ser un cargo, y la notificación de una app que no pinta nada
+ * aquí. La primera se sigue mirando; la segunda no debería volver.
+ */
+enum class InboxClass {
+    /** Un cargo o un abono: se puede llevar a un grupo. */
+    BANK,
+
+    /** Llegó de una app que miramos, pero no es un movimiento. */
+    OTHER,
+
+    /** No es de banco en absoluto: se deja de seguir su app. */
+    NON_BANK;
+
+    val label: String
+        get() = when (this) {
+            BANK -> "Movimientos bancarios"
+            OTHER -> "Otros eventos"
+            NON_BANK -> "No bancarios"
+        }
+}
+
 enum class InboxStatus { PENDING, PUSHED, IGNORED }
 
 /**
@@ -84,17 +112,17 @@ data class InboxEntry(
     val confidence: Confidence = Confidence.LOW,
     val status: InboxStatus = InboxStatus.PENDING,
     /**
-     * Calibración a mano: true = "esto sí es un movimiento bancario",
-     * false = "esto no lo es", null = lo que haya decidido el parser.
+     * Clasificación a mano, cuando la hay. null significa «lo que diga el
+     * parser».
      *
      * Existe porque el parser acierta mucho pero no siempre, y las dos
      * equivocaciones cuestan distinto: un aviso comercial colado entre los
-     * movimientos se ignora de un toque, pero una nómina que el banco notifica
+     * movimientos se aparta de un toque, pero una nómina que el banco notifica
      * sin importe se pierde para siempre si la app no ofrece rescatarla. Al
-     * dejar mover cada notificación de un grupo al otro, la bandeja deja de ser
-     * una lista de resultados y pasa a ser el sitio donde se afina el sistema.
+     * dejar mover cada notificación de cajón, la bandeja deja de ser una lista
+     * de resultados y pasa a ser el sitio donde se afina el sistema.
      */
-    val userMovement: Boolean? = null,
+    val userClass: InboxClass? = null,
     /** Rellenados al enviarlo a Tricount */
     val tricountId: Int? = null,
     val remoteTxId: Int? = null,
@@ -105,9 +133,11 @@ data class InboxEntry(
     val parsedAsMovement: Boolean
         get() = amount != null && kind != DetectedKind.UNKNOWN
 
-    /** Lo que vale: tu criterio si lo has dado, y si no el del parser. */
-    val isBankMovement: Boolean
-        get() = userMovement ?: parsedAsMovement
+    /** En qué cajón cae: tu criterio si lo has dado, y si no el del parser. */
+    val classification: InboxClass
+        get() = userClass ?: if (parsedAsMovement) InboxClass.BANK else InboxClass.OTHER
+
+    val isBankMovement: Boolean get() = classification == InboxClass.BANK
 }
 
 @Dao
@@ -117,6 +147,10 @@ interface InboxDao {
 
     @Query("SELECT * FROM inbox WHERE status = :status ORDER BY detectedAt DESC")
     fun observeByStatus(status: InboxStatus): Flow<List<InboxEntry>>
+
+    /** Lo ya enviado a Tricount, para poder mirar atrás. */
+    @Query("SELECT * FROM inbox WHERE status = 'PUSHED' ORDER BY detectedAt DESC LIMIT :limit")
+    fun observeHistory(limit: Int = 50): Flow<List<InboxEntry>>
 
     @Query("SELECT COUNT(*) FROM inbox WHERE dedupeKey = :key AND detectedAt > :since")
     suspend fun countRecentWithKey(key: String, since: Long): Int
@@ -134,7 +168,7 @@ interface InboxDao {
      */
     @Query(
         "SELECT COUNT(*) FROM inbox WHERE status = 'PENDING' AND (" +
-            "userMovement = 1 OR (userMovement IS NULL AND amount IS NOT NULL AND kind != 'UNKNOWN')" +
+            "userClass = 'BANK' OR (userClass IS NULL AND amount IS NOT NULL AND kind != 'UNKNOWN')" +
             ")"
     )
     suspend fun countPending(): Int
@@ -158,9 +192,74 @@ class Converters {
     @TypeConverter fun statusToString(v: InboxStatus): String = v.name
     @TypeConverter fun stringToStatus(v: String): InboxStatus =
         runCatching { InboxStatus.valueOf(v) }.getOrDefault(InboxStatus.PENDING)
+
+    @TypeConverter fun classToString(v: InboxClass?): String? = v?.name
+    @TypeConverter fun stringToClass(v: String?): InboxClass? =
+        v?.let { runCatching { InboxClass.valueOf(it) }.getOrNull() }
 }
 
-@Database(entities = [InboxEntry::class], version = 4, exportSchema = false)
+/**
+ * De dos cajones a tres.
+ *
+ * `userMovement` era un booleano con tres estados por la puerta de atrás: sí,
+ * no y «lo que diga el parser». El «no» de antes significaba «esto no es un
+ * movimiento», que es exactamente *Otros eventos*: lo que no es de banco en
+ * absoluto nadie lo pudo marcar todavía, porque ese cajón no existía.
+ *
+ * Se recrea la tabla en vez de añadir la columna y dejar la vieja: Room
+ * compara el esquema con la entidad y una columna de más aborta el arranque.
+ */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS inbox_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                detectedAt INTEGER NOT NULL,
+                sourcePackage TEXT NOT NULL,
+                bankLabel TEXT NOT NULL,
+                rawTitle TEXT NOT NULL,
+                rawText TEXT NOT NULL,
+                amount REAL,
+                currency TEXT NOT NULL,
+                counterparty TEXT,
+                merchant TEXT,
+                concept TEXT,
+                kind TEXT NOT NULL,
+                confidence TEXT NOT NULL,
+                status TEXT NOT NULL,
+                userClass TEXT,
+                tricountId INTEGER,
+                remoteTxId INTEGER,
+                dedupeKey TEXT NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT INTO inbox_new (
+                id, detectedAt, sourcePackage, bankLabel, rawTitle, rawText, amount,
+                currency, counterparty, merchant, concept, kind, confidence, status,
+                userClass, tricountId, remoteTxId, dedupeKey
+            )
+            SELECT
+                id, detectedAt, sourcePackage, bankLabel, rawTitle, rawText, amount,
+                currency, counterparty, merchant, concept, kind, confidence, status,
+                CASE
+                    WHEN userMovement = 1 THEN 'BANK'
+                    WHEN userMovement = 0 THEN 'OTHER'
+                    ELSE NULL
+                END,
+                tricountId, remoteTxId, dedupeKey
+            FROM inbox
+            """.trimIndent()
+        )
+        db.execSQL("DROP TABLE inbox")
+        db.execSQL("ALTER TABLE inbox_new RENAME TO inbox")
+    }
+}
+
+@Database(entities = [InboxEntry::class], version = 5, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun inboxDao(): InboxDao

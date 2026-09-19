@@ -124,48 +124,121 @@ object Stats {
     /** ¿Está el grupo en paz? Es lo mismo que no quedar ningún pago pendiente. */
     fun isSettled(t: Tricount): Boolean = settlementPlan(t).isEmpty()
 
-    /** Total gastado (solo gastos, sin ingresos ni reembolsos). */
-    fun totalSpent(t: Tricount): Double =
-        r2(t.activeTransactions.filter { it.type == TxType.NORMAL }.sumOf { it.amount.abs })
+    // -----------------------------------------------------------------------
+    // Estadísticas
+    // -----------------------------------------------------------------------
 
-    fun byCategory(t: Tricount): List<Pair<String, Double>> =
-        t.activeTransactions
-            .filter { it.type == TxType.NORMAL }
+    /**
+     * El tramo de tiempo que se está mirando, como prefijo de la fecha:
+     * `""` es todo, `"2026"` un año y `"2026-09"` un mes. Las fechas de la API
+     * son `yyyy-MM-dd …`, así que filtrar es comparar el principio de la
+     * cadena y no hace falta convertir nada a `Date`.
+     */
+    const val ALL_TIME = ""
+
+    /** Los tramos que tienen algo dentro, del más reciente al más antiguo. */
+    fun periodsOf(groups: List<Tricount>): List<String> {
+        val months = groups.flatMap { t -> t.activeTransactions.map { it.date.take(7) } }
+            .filter { it.length == 7 }
+            .distinct()
+        val years = months.map { it.take(4) }.distinct()
+        return (years.sortedDescending() + months.sortedDescending())
+    }
+
+    /**
+     * Los movimientos que cuentan como **gasto**.
+     *
+     * En un grupo normal son los de tipo NORMAL: un ingreso no es un gasto y
+     * una transferencia solo mueve dinero de un bolsillo a otro del mismo
+     * grupo. En uno de ahorro no vale mirar el tipo, porque lo que distingue
+     * un ingreso de un gasto es de quién sale: todo lo que no venga de la
+     * fuente de ingresos es gasto, con el tipo que sea.
+     */
+    fun expenses(t: Tricount, incomeUuid: String? = null, period: String = ALL_TIME): List<Transaction> =
+        t.activeTransactions.filter { tx ->
+            tx.date.startsWith(period) &&
+                if (incomeUuid != null) tx.ownerUuid != incomeUuid else tx.type == TxType.NORMAL
+        }
+
+    /** Lo que de un movimiento te toca a ti, o su importe entero. */
+    private fun weight(tx: Transaction, mineUuid: String?): Double =
+        if (mineUuid == null) tx.amount.abs
+        else tx.allocations.filter { it.membershipUuid == mineUuid }.sumOf { it.amount.abs }
+
+    /**
+     * Gasto por categoría.
+     *
+     * `mineUuid` a null da la lectura del grupo entero; con tu uuid, solo lo
+     * que te toca a ti del reparto. Son las dos preguntas que se le hacen a
+     * esta pantalla — en qué se va el dinero del grupo, y en qué se va el mío
+     * — y la segunda no se podía contestar: la única cifra individual era un
+     * total sin desglosar.
+     */
+    fun byCategory(
+        t: Tricount,
+        incomeUuid: String? = null,
+        mineUuid: String? = null,
+        period: String = ALL_TIME
+    ): List<Pair<String, Double>> =
+        expenses(t, incomeUuid, period)
             .groupBy { tx ->
                 tx.categoryCustom
                     ?: Category.fromApi(tx.category)?.let { "${it.emoji} ${it.label}" }
                     ?: "✋ Otros"
             }
-            .map { (k, v) -> k to r2(v.sumOf { it.amount.abs }) }
+            .map { (k, v) -> k to r2(v.sumOf { weight(it, mineUuid) }) }
+            .filter { it.second > 0.005 }
             .sortedByDescending { it.second }
 
+    /** Lo mismo sumando varios grupos: la lectura de todos a la vez. */
+    fun byCategoryAcross(
+        groups: List<Tricount>,
+        incomeUuidOf: (Tricount) -> String? = { null },
+        mine: Boolean = false,
+        period: String = ALL_TIME
+    ): List<Pair<String, Double>> =
+        groups
+            .flatMap { t ->
+                byCategory(t, incomeUuidOf(t), if (mine) t.activeMembershipUuid else null, period)
+            }
+            .groupBy({ it.first }, { it.second })
+            .map { (k, v) -> k to r2(v.sum()) }
+            .sortedByDescending { it.second }
+
+    /** Total gastado (solo gastos, sin ingresos ni reembolsos). */
+    fun totalSpent(
+        t: Tricount,
+        incomeUuid: String? = null,
+        mineUuid: String? = null,
+        period: String = ALL_TIME
+    ): Double = r2(expenses(t, incomeUuid, period).sumOf { weight(it, mineUuid) })
+
     /** Clave "yyyy-MM" → total. Ordenado cronológicamente. */
-    fun byMonth(t: Tricount): List<Pair<String, Double>> =
-        t.activeTransactions
-            .filter { it.type == TxType.NORMAL }
+    fun byMonth(
+        t: Tricount,
+        incomeUuid: String? = null,
+        mineUuid: String? = null,
+        period: String = ALL_TIME
+    ): List<Pair<String, Double>> =
+        expenses(t, incomeUuid, period)
             .groupBy { it.date.take(7) }
-            .map { (k, v) -> k to r2(v.sumOf { it.amount.abs }) }
+            .map { (k, v) -> k to r2(v.sumOf { weight(it, mineUuid) }) }
             .sortedBy { it.first }
 
-    fun byPayer(t: Tricount): List<Pair<String, Double>> =
-        t.activeTransactions
-            .filter { it.type == TxType.NORMAL }
+    fun byPayer(t: Tricount, incomeUuid: String? = null, period: String = ALL_TIME): List<Pair<String, Double>> =
+        expenses(t, incomeUuid, period)
             .groupBy { t.memberByUuid(it.ownerUuid)?.displayName ?: "?" }
             .map { (k, v) -> k to r2(v.sumOf { it.amount.abs }) }
             .sortedByDescending { it.second }
 
     /** Lo que "te toca a ti": suma de tus asignaciones en los gastos. */
-    fun myShare(t: Tricount): Double {
+    fun myShare(t: Tricount, incomeUuid: String? = null, period: String = ALL_TIME): Double {
         val me = t.activeMembershipUuid ?: return 0.0
-        return r2(
-            t.activeTransactions
-                .filter { it.type == TxType.NORMAL }
-                .sumOf { tx -> tx.allocations.filter { it.membershipUuid == me }.sumOf { it.amount.abs } }
-        )
+        return totalSpent(t, incomeUuid, me, period)
     }
 
-    fun averagePerTransaction(t: Tricount): Double {
-        val txs = t.activeTransactions.filter { it.type == TxType.NORMAL }
+    fun averagePerTransaction(t: Tricount, incomeUuid: String? = null, period: String = ALL_TIME): Double {
+        val txs = expenses(t, incomeUuid, period)
         if (txs.isEmpty()) return 0.0
         return r2(txs.sumOf { it.amount.abs } / txs.size)
     }

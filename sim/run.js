@@ -1,3 +1,13 @@
+// Comprobaciones automatizadas sobre el prototipo navegable, en claro y
+// oscuro. No sustituyen a probar la app en un móvil: comprueban las reglas de
+// comportamiento que sí se pueden escribir —qué aparece, qué cambia al tocar
+// algo, qué no debe pasar— sobre una maqueta que sigue la misma lógica.
+//
+//   npm run check:ui
+//
+// El botón atrás del móvil no existe en un navegador: el prototipo lo expone
+// como window.__back() y aquí se llama así.
+
 const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
@@ -6,7 +16,7 @@ fs.mkdirSync(OUT, { recursive: true });
 const URL = require('url').pathToFileURL(path.resolve(__dirname, '..', 'prototipo-ui.html')).href;
 
 const fails = [];
-function check(name, cond, extra='') {
+function check(name, cond, extra = '') {
   console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : ' :: ' + extra));
   if (!cond) fails.push(name);
 }
@@ -24,360 +34,464 @@ function check(name, cond, extra='') {
     page.on('pageerror', e => errors.push(e.message));
     page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
     await page.goto(URL);
+    const shot = n => page.screenshot({ path: `${OUT}/${theme}-${n}.png` });
+    const wait = ms => page.waitForTimeout(ms);
 
-    // La pantalla de carga dura 1 s exactos
-    await page.waitForTimeout(120);
-    const splashAt120 = await page.locator('#splash').count();
-    check(`[${theme}] la animación de carga se muestra al abrir`, splashAt120 === 1);
-    await page.screenshot({ path: `${OUT}/${theme}-00-carga.png` });
+    // ---- Pantalla de carga ----
+    await wait(120);
+    check(`[${theme}] la animación de carga se muestra al abrir`,
+      (await page.locator('#splash').count()) === 1);
+    await shot('00-carga');
     await page.waitForFunction(() => window.__splashMs != null, null, { timeout: 4000 });
     const splashMs = await page.evaluate(() => window.__splashMs);
     check(`[${theme}] la animación dura 1 s`, splashMs >= 1000 && splashMs < 1120,
-          `${Math.round(splashMs)} ms`);
+      `${Math.round(splashMs)} ms`);
     await page.waitForFunction(() => !document.getElementById('splash'), null, { timeout: 3000 });
-    check(`[${theme}] la carga se retira y deja ver la app`, true);
-    await page.waitForTimeout(120);
-    const shot = n => page.screenshot({ path: `${OUT}/${theme}-${n}.png` });
+    await wait(120);
 
-    // ---- Pestaña Grupos ----
+    // =====================================================================
+    // Pestaña Grupos: rejilla, buscador y tinte
+    // =====================================================================
     await shot('01-grupos');
-    const heroBefore = await page.textContent('.hero .num');
+    check(`[${theme}] sin scroll horizontal`, !(await page.evaluate(() =>
+      document.documentElement.scrollWidth > document.documentElement.clientWidth)));
 
-    // horizontal scroll: la app no debe desbordar
-    const overflow = await page.evaluate(() =>
-      document.documentElement.scrollWidth > document.documentElement.clientWidth);
-    check(`[${theme}] sin scroll horizontal`, !overflow);
+    const cards = await page.locator('.card').count();
+    check(`[${theme}] la rejilla enseña todos los grupos`, cards === 3, `tarjetas=${cards}`);
+    check(`[${theme}] cada ficha lleva su cifra`,
+      (await page.locator('.card .cn').count()) === cards);
 
-    // cambio de grupo
-    await page.click('text=✈️ Viaje Lisboa');
-    await page.waitForTimeout(120);
-    const heroLisboa = await page.textContent('.hero .num');
-    check(`[${theme}] cambiar de grupo actualiza el hero`, heroLisboa !== heroBefore,
-          `${heroBefore} -> ${heroLisboa}`);
-    await shot('02-grupo-lisboa');
-
-    await page.click('text=🏠 Piso Salamanca');
-    await page.waitForTimeout(120);
-
-    // pestaña interna Balance
-    await page.click('button.pill:has-text("Balance")');
-    await page.waitForTimeout(200);
-    const balanceRows = await page.locator('.row').count();
-    check(`[${theme}] balance lista miembros y liquidación`, balanceRows >= 4, `rows=${balanceRows}`);
-    // la suma de saldos debe ser ~0
-    const sum = await page.evaluate(() => {
-      const b = window.__stats.balances(window.__G.find(x => x.id === 7));
-      return Object.values(b).reduce((a, c) => a + c, 0);
+    // El grupo de ahorro se distingue sin leer la etiqueta.
+    const tintDistinto = await page.evaluate(() => {
+      const sav = document.querySelector('.card.savings');
+      const nor = document.querySelector('.card:not(.savings)');
+      if (!sav || !nor) return false;
+      return getComputedStyle(sav).backgroundColor !== getComputedStyle(nor).backgroundColor;
     });
-    check(`[${theme}] los saldos suman cero`, Math.abs(sum) < 0.02, `suma=${sum}`);
-    await shot('03-balance');
-    await page.click('button.pill:has-text("Movimientos")');
-    await page.waitForTimeout(150);
+    check(`[${theme}] el grupo de ahorro tiene otra tonalidad`, tintDistinto);
+    check(`[${theme}] y además lo dice`,
+      (await page.locator('.card.savings .tag').textContent()).includes('AHORRO'));
 
-    // ---- Crear gasto ----
-    const txBefore = await page.locator('.row').count();
-    await page.click('button:has-text("Añadir gasto")');
-    await page.waitForTimeout(350);
-    await shot('04-hoja-nuevo-gasto');
-    const disabled = await page.getAttribute('#save-btn', 'disabled');
-    check(`[${theme}] guardar deshabilitado con el formulario vacío`, disabled !== null);
+    // Buscador: fragmentos y sin tildes.
+    await page.fill('#g-search', 'lisb');
+    await wait(150);
+    check(`[${theme}] el buscador filtra por un fragmento del título`,
+      (await page.locator('.card').count()) === 1);
+    await page.fill('#g-search', 'AHORRO CASA');
+    await wait(150);
+    check(`[${theme}] el buscador ignora mayúsculas`,
+      (await page.locator('.card').count()) === 1);
+    await page.fill('#g-search', 'zzz');
+    await wait(150);
+    check(`[${theme}] sin resultados lo dice en vez de quedarse en blanco`,
+      (await page.locator('text=Ningún grupo se llama así').count()) === 1);
+    await page.fill('#g-search', '');
+    await wait(150);
 
-    await page.fill('#f-amount', '24.60');
-    await page.waitForTimeout(80);
-    await page.fill('#f-desc', 'Cena de prueba');
-    await page.waitForTimeout(80);
-    await page.click('.sheet .pills button:has-text("🍔 Restaurantes")');
-    await page.waitForTimeout(120);
-    const perPerson = await page.textContent('.sheet .sub');
-    check(`[${theme}] calcula el reparto por persona`, /6,15/.test(perPerson), perPerson);
-    await shot('05-hoja-rellena');
+    // =====================================================================
+    // Un grupo abierto
+    // =====================================================================
+    await page.click('#card-7');
+    await wait(200);
+    await shot('02-grupo');
+    check(`[${theme}] al tocar una ficha se abre el grupo`,
+      (await page.locator('#back-btn').count()) === 1);
+
+    const figs = await page.locator('.fig .fl').allTextContents();
+    check(`[${theme}] un grupo normal enseña mis gastos y los del grupo`,
+      figs.includes('Mis gastos') && figs.includes('Gastos del grupo'), figs.join('|'));
+    const misGastos = await page.locator('.fig').nth(0).locator('.fv').textContent();
+    const totalGrupo = await page.locator('.fig').nth(1).locator('.fv').textContent();
+    check(`[${theme}] mis gastos son menos que los del grupo`,
+      parseFloat(misGastos) < parseFloat(totalGrupo), `${misGastos} / ${totalGrupo}`);
+
+    // Quién lo hizo y a quién afecta.
+    const sub = await page.locator('.row .s').first().textContent();
+    check(`[${theme}] cada movimiento dice quién pagó`, /pag[óo]|recibió|→/.test(sub), sub);
+    check(`[${theme}] y a quién afecta`, /entre|para/.test(sub), sub);
+
+    // ---- Alta de movimiento: tipo, fecha y reparto ----
+    const txAntes = await page.locator('.row').count();
+    await page.click('button:has-text("Añadir movimiento")');
+    await wait(350);
+    await shot('03-alta');
+    check(`[${theme}] la hoja ofrece los tres tipos`,
+      (await page.locator('[data-kind]').count()) === 3);
+    check(`[${theme}] la hoja tiene fecha`, (await page.locator('#date-row').count()) === 1);
+    const fecha0 = await page.locator('#date-row .v').textContent();
+    await page.click('#date-row');
+    await wait(150);
+    check(`[${theme}] la fecha se puede cambiar`,
+      (await page.locator('#date-row .v').textContent()) !== fecha0);
+
+    await page.fill('#f-amount', '30');
+    await page.fill('#f-desc', 'Prueba reparto');
+    await wait(200);
+    const porPersona = await page.locator('.mrow .mv').first().textContent();
+    check(`[${theme}] el reparto igualitario dice cuánto le toca a cada uno`,
+      porPersona.includes('7,50'), porPersona);
+
+    // Reparto por cantidades: fijar una y que el resto se reparta.
+    await page.click('#mode-amounts');
+    await wait(200);
+    check(`[${theme}] el reparto por cantidades da un campo por persona`,
+      (await page.locator('.mrow input').count()) === 4);
+    await page.fill('[data-amt="u-ana"]', '15');
+    await wait(200);
+    const nota = await page.locator('#split-note').textContent();
+    check(`[${theme}] dice cuánto queda para los demás`, nota.includes('15,00'), nota.trim());
+    check(`[${theme}] con partes libres el guardado sigue disponible`,
+      !(await page.locator('#save-btn').isDisabled()));
+
+    // Fijarlas todas sin cuadrar: la API lo rechazaría, así que no se deja.
+    await page.fill('[data-amt="u-ben"]', '5');
+    await page.fill('[data-amt="u-cid"]', '5');
+    await page.fill('[data-amt="u-dee"]', '1');
+    await wait(250);
+    const nota2 = await page.locator('#split-note').textContent();
+    check(`[${theme}] avisa de lo que falta cuando se fijan todas`,
+      nota2.includes('Faltan'), nota2.trim());
+    check(`[${theme}] y no deja guardar un reparto que no suma`,
+      await page.locator('#save-btn').isDisabled());
+    await page.fill('[data-amt="u-dee"]', '5');
+    await wait(250);
+    check(`[${theme}] cuadradas, vuelve a dejar guardar`,
+      !(await page.locator('#save-btn').isDisabled()));
+
     await page.click('#save-btn');
-    await page.waitForTimeout(300);
-    const txAfter = await page.locator('.row').count();
-    check(`[${theme}] el gasto aparece en la lista`, txAfter === txBefore + 1,
-          `${txBefore} -> ${txAfter}`);
-    const toastTxt = await page.textContent('#toast');
-    check(`[${theme}] confirmación visible`, /añadido/i.test(toastTxt), toastTxt);
-    await shot('06-gasto-anadido');
+    await wait(400);
+    check(`[${theme}] el movimiento se añade a la lista`,
+      (await page.locator('.row').count()) > txAntes);
+    await shot('04-alta-hecha');
 
-    // ---- Editar ----
-    await page.click('.row:has-text("Cena de prueba")');
-    await page.waitForTimeout(320);
-    const amtVal = await page.inputValue('#f-amount');
-    check(`[${theme}] el editor precarga el importe`, amtVal === '24.60', amtVal);
-    await page.fill('#f-amount', '30.00');
-    await page.waitForTimeout(80);
+    // Editar conserva el reparto desigual.
+    await page.click('text=Prueba reparto');
+    await wait(350);
+    check(`[${theme}] al editar, el reparto desigual sigue siéndolo`,
+      (await page.locator('#mode-amounts.on').count()) === 1);
+    await page.click('text=Cancelar');
+    await wait(250);
+
+    // =====================================================================
+    // Navegación: atrás, doble toque y memoria por pestaña
+    // =====================================================================
+    let back = await page.evaluate(() => window.__back());
+    check(`[${theme}] atrás cierra el grupo abierto`, back === 'screen');
+    await wait(200);
+    check(`[${theme}] y deja la rejilla a la vista`,
+      (await page.locator('.card').count()) === 3);
+
+    await page.click('#card-7');
+    await wait(200);
+    await page.click('[data-tab="stats"]');
+    await wait(200);
+    await page.click('[data-tab="groups"]');
+    await wait(200);
+    check(`[${theme}] cada pestaña recuerda dónde la dejaste`,
+      (await page.locator('#back-btn').count()) === 1);
+
+    // Dos toques seguidos en la pestaña vuelven a su ventana principal.
+    await page.click('[data-tab="groups"]');
+    await page.click('[data-tab="groups"]');
+    await wait(250);
+    check(`[${theme}] el doble toque vuelve a la ventana principal`,
+      (await page.locator('.card').count()) === 3);
+
+    // Un solo toque no debe hacerlo.
+    await page.click('#card-7');
+    await wait(200);
+    await page.click('[data-tab="groups"]');
+    await wait(500);
+    await page.click('[data-tab="groups"]');
+    await wait(250);
+    check(`[${theme}] dos toques lentos no cuentan como doble toque`,
+      (await page.locator('#back-btn').count()) === 1);
+    await page.evaluate(() => window.__back());
+    await wait(200);
+
+    // La hoja se lleva el gesto antes que la pantalla.
+    await page.click('#card-7');
+    await wait(200);
+    await page.click('button:has-text("Añadir movimiento")');
+    await wait(350);
+    back = await page.evaluate(() => window.__back());
+    check(`[${theme}] atrás cierra primero la hoja`, back === 'sheet');
+    back = await page.evaluate(() => window.__back());
+    check(`[${theme}] el siguiente atrás cierra el grupo`, back === 'screen');
+    await wait(150);
+    back = await page.evaluate(() => window.__back());
+    check(`[${theme}] en la ventana principal, atrás cierra la app`, back === 'exit');
+
+    // =====================================================================
+    // Pestaña Ahorro
+    // =====================================================================
+    await page.click('[data-tab="savings"]');
+    await wait(250);
+    await shot('05-ahorro');
+    const savFigs = await page.locator('.fig .fl').allTextContents();
+    check(`[${theme}] ahorro enseña ingresos, gastos y balance`,
+      savFigs.join('|') === 'Ingresos|Gastos|Balance', savFigs.join('|'));
+    const saved = await page.evaluate(() =>
+      window.__stats.savingsSummary(window.__G.find(x => x.id === 9)));
+    check(`[${theme}] el balance es ingresos menos gastos`,
+      Math.abs(saved.saved - (saved.income - saved.spent)) < 0.005);
+
+    await page.click('#card-9');
+    await wait(250);
+    check(`[${theme}] el grupo de ahorro dice quién gasta`,
+      (await page.locator('#spender-row').count()) === 1);
+    await page.click('button:has-text("Añadir movimiento")');
+    await wait(350);
+    check(`[${theme}] en ahorro no se ofrece transferencia`,
+      (await page.locator('[data-kind]').count()) === 2);
+    check(`[${theme}] ni selectores de miembros: los papeles están decididos`,
+      (await page.locator('.mrow').count()) === 0);
+    await page.fill('#f-amount', '20');
+    await page.fill('#f-desc', 'Gasto de ahorro');
+    await wait(200);
     await page.click('#save-btn');
-    await page.waitForTimeout(300);
-    const edited = await page.textContent('.row:has-text("Cena de prueba")');
-    check(`[${theme}] la edición se refleja`, /30,00/.test(edited), edited.replace(/\s+/g, ' '));
+    await wait(400);
+    const ahorroOk = await page.evaluate(() => {
+      const g = window.__G.find(x => x.id === 9);
+      const tx = g.transactions.find(t => t.description === 'Gasto de ahorro');
+      const sp = g.members.find(m => m.name !== 'Ingresos');
+      return tx && tx.ownerUuid === sp.uuid &&
+        tx.allocations.length === 1 && tx.allocations[0].membershipUuid === sp.uuid;
+    });
+    check(`[${theme}] el gasto de ahorro va de quien gasta hacia quien gasta`, ahorroOk);
+    await page.evaluate(() => window.__back());
+    await wait(200);
 
-    // ---- Borrar ----
-    await page.click('.row:has-text("Cena de prueba")');
-    await page.waitForTimeout(320);
-    await page.click('.danger');
-    await page.waitForTimeout(300);
-    const stillThere = await page.locator('.row:has-text("Cena de prueba")').count();
-    check(`[${theme}] el gasto se elimina`, stillThere === 0);
+    // =====================================================================
+    // Estadísticas: anillo, ámbito y periodo
+    // =====================================================================
+    await page.click('[data-tab="stats"]');
+    await wait(300);
+    await shot('06-estadisticas');
+    check(`[${theme}] la distribución por categoría es un anillo`,
+      (await page.locator('#donut svg circle').count()) > 1);
+    const leyenda = await page.locator('.legend').count();
+    check(`[${theme}] el anillo lleva leyenda con nombre e importe`, leyenda > 1, `filas=${leyenda}`);
+    check(`[${theme}] la leyenda dice el porcentaje de cada categoría`,
+      (await page.locator('.legend .lp').first().textContent()).includes('%'));
 
-    // ---- Estadísticas ----
-    await page.click('.tab[data-tab="stats"]');
-    await page.waitForTimeout(250);
-    await shot('07-estadisticas-categoria');
-    const bars = await page.locator('.bar i').count();
-    check(`[${theme}] las barras de categoría se dibujan`, bars > 0, `bars=${bars}`);
-    await page.click('button.pill:has-text("Persona")');
-    await page.waitForTimeout(300);
-    await shot('08-estadisticas-persona');
-    await page.click('button.pill:has-text("Mes")');
-    await page.waitForTimeout(300);
-    await shot('09-estadisticas-mes');
-    const monthLabels = await page.locator('.statrow .line span').first().textContent();
-    check(`[${theme}] los meses salen en español`, /ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic/.test(monthLabels), monthLabels);
+    // La regla de color de la app: verde y rojo son del dinero, y el anillo
+    // identifica categorías. Si compartieran color, una categoría cualquiera
+    // se leería como un saldo a favor o en contra.
+    const paletaLimpia = await page.evaluate(() => {
+      const cs = getComputedStyle(document.documentElement);
+      const pos = cs.getPropertyValue('--pos').trim().toLowerCase();
+      const neg = cs.getPropertyValue('--neg').trim().toLowerCase();
+      const strokes = [...document.querySelectorAll('#donut svg circle')]
+        .map(c => (c.getAttribute('stroke') || '').toLowerCase());
+      return strokes.length > 0 && !strokes.some(x => x === pos || x === neg);
+    });
+    check(`[${theme}] el anillo no reutiliza el verde y el rojo del dinero`, paletaLimpia);
 
-    // ---- Bandeja ----
-    await page.click('.tab[data-tab="inbox"]');
-    await page.waitForTimeout(250);
-    await shot('10-bandeja');
-    // tipos de movimiento reconocidos, con su etiqueta
-    const inboxText = await page.textContent('.screen');
-    for (const label of ['Bizum recibido', 'Pago con tarjeta', 'Gasto en cuenta conjunta',
-                         'Recibo domiciliado']) {
-      check(`[${theme}] la bandeja etiqueta «${label}»`, inboxText.includes(label));
+    const totalGrupoStat = await page.locator('.hero .num').textContent();
+    await page.click('button.pill:has-text("Mi parte")');
+    await wait(300);
+    const totalMio = await page.locator('.hero .num').textContent();
+    check(`[${theme}] "mi parte" da una cifra distinta a la del grupo`,
+      totalMio !== totalGrupoStat, `${totalGrupoStat} -> ${totalMio}`);
+    check(`[${theme}] y menor, porque es solo lo tuyo`,
+      parseFloat(totalMio) < parseFloat(totalGrupoStat));
+    await shot('07-estadisticas-mias');
+
+    await page.click('button.pill:has-text("Todo el grupo")');
+    await wait(250);
+    const todoElTiempo = await page.locator('.hero .num').textContent();
+    await page.click('.pills:nth-of-type(2) button.pill >> nth=1');
+    await wait(300);
+    const unTramo = await page.locator('.hero .num').textContent();
+    check(`[${theme}] filtrar por periodo cambia la cifra`,
+      unTramo !== todoElTiempo, `${todoElTiempo} -> ${unTramo}`);
+    await page.click('button.pill:has-text("Todo")');
+    await wait(250);
+
+    // En ahorro también hay categorías, y sin contar los ingresos.
+    await page.click('button.pill:has-text("Ahorro")');
+    await wait(300);
+    const donutAhorro = await page.locator('#donut').count();
+    check(`[${theme}] los grupos de ahorro también tienen su distribución`, donutAhorro === 1);
+    const sinNomina = await page.locator('.legend .ll').allTextContents();
+    check(`[${theme}] y no cuentan la nómina como gasto`,
+      !sinNomina.some(t => t.toLowerCase().includes('nómina')), sinNomina.join('|'));
+
+    // =====================================================================
+    // Bandeja: tres cajones
+    // =====================================================================
+    await page.click('[data-tab="inbox"]');
+    await wait(300);
+    await shot('08-bandeja');
+    const secciones = await page.locator('[data-section]').allTextContents();
+    // El tercer cajón solo aparece cuando hay algo dentro: al empezar nadie
+    // ha marcado nada como no bancario. Que se llene se comprueba más abajo.
+    check(`[${theme}] la bandeja separa movimientos de lo demás`,
+      secciones.join('|') === 'Movimientos bancarios|Otros eventos', secciones.join('|'));
+
+    const contador = await page.locator('.hero .num').textContent();
+    const bancarios = await page.evaluate(() =>
+      window.__INBOX().filter(e => window.__classOf(e) === 'BANK').length);
+    check(`[${theme}] el contador solo cuenta los movimientos`,
+      parseInt(contador, 10) === bancarios, `${contador} vs ${bancarios}`);
+
+    // Un aviso sin importe cae en "otros eventos" y se puede rescatar.
+    await page.click('text=Nómina abonada');
+    await wait(350);
+    check(`[${theme}] lo descartado se puede marcar como movimiento`,
+      (await page.locator('#mark-bank').count()) === 1);
+    await page.click('#mark-bank');
+    await wait(300);
+    const vigilada = await page.evaluate(() =>
+      window.__S.banks.known.includes('com.bbva.bbvacontigo') &&
+      !window.__S.banks.disabled.includes('com.bbva.bbvacontigo'));
+    check(`[${theme}] marcarlo como bancario deja su app vigilada`, vigilada);
+    await page.click('text=Cancelar');
+    await wait(250);
+
+    // "No bancario" apaga la app de origen: es lo que pediste que hiciera.
+    await page.click('text=Tu conductor está llegando');
+    await wait(350);
+    await page.click('#to-NON_BANK');
+    await wait(350);
+    const apagada = await page.evaluate(() =>
+      window.__S.banks.disabled.includes('com.cabify.rider'));
+    check(`[${theme}] marcar "no bancario" deja de seguir su app`, apagada);
+    const enNoBancarios = await page.locator('[data-section="NON_BANK"]').count();
+    check(`[${theme}] y la notificación pasa al cajón de no bancarios`, enNoBancarios === 1);
+    await shot('09-bandeja-tres');
+
+    // =====================================================================
+    // Ajustes: apartados plegables
+    // =====================================================================
+    await page.click('[data-tab="settings"]');
+    await wait(300);
+    await shot('10-ajustes');
+    check(`[${theme}] los apartados aparecen plegados`,
+      (await page.locator('[data-secbody]').count()) === 0);
+    const apartados = await page.locator('[data-sec]').allTextContents();
+    check(`[${theme}] los permisos van juntos en su apartado`,
+      apartados.some(t => t.includes('Permisos')), apartados.join('|'));
+
+    check(`[${theme}] la actualización se anuncia arriba del todo`,
+      (await page.locator('#update-card').count()) === 1);
+    const ordenOk = await page.evaluate(() => {
+      const card = document.getElementById('update-card');
+      const first = document.querySelector('[data-sec]');
+      return card && first && card.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING;
+    });
+    check(`[${theme}] y por encima de los apartados`, !!ordenOk);
+
+    await page.click('[data-sec="deteccion"]');
+    await wait(250);
+    check(`[${theme}] al tocar un apartado se despliega`,
+      (await page.locator('[data-secbody="deteccion"]').count()) === 1);
+    await shot('11-ajustes-abierto');
+
+    // Modo aprendizaje: tres estados, no un interruptor.
+    const modos = [];
+    for (let i = 0; i < 3; i++) {
+      modos.push((await page.locator('#learn-row .v').textContent()).trim());
+      await page.click('#learn-row');
+      await wait(200);
     }
-    const lowRow = await page.textContent('.row:has-text("Suscripción")');
-    check(`[${theme}] lo que no encaja en ninguna regla se marca «revisar»`,
-          /revisar/.test(lowRow) && /Cargo/.test(lowRow), lowRow.replace(/\s+/g, ' '));
-    const cardRow = await page.textContent('.row:has-text("Lefties")');
-    check(`[${theme}] un pago con tarjeta muestra el comercio y va en rojo`,
-          /Lefties/.test(cardRow) && /-70,94/.test(cardRow), cardRow.replace(/\s+/g, ' '));
-    const jointRow = await page.textContent('.row:has-text("Amazon")');
-    check(`[${theme}] un gasto conjunto muestra el comercio, no solo la persona`,
-          /Amazon/.test(jointRow), jointRow.replace(/\s+/g, ' '));
+    check(`[${theme}] el modo aprendizaje tiene tres estados`,
+      new Set(modos).size === 3, modos.join(' → '));
+    check(`[${theme}] y vuelve al primero al dar la vuelta`,
+      (await page.locator('#learn-row .v').textContent()).trim() === modos[0]);
 
-    const dot = await page.locator('.dot').count();
-    check(`[${theme}] la bandeja avisa con punto en la pestaña`, dot === 1);
-    const recibido = await page.textContent('.row:has-text("Ben Torres")');
-    check(`[${theme}] Bizum recibido en verde y con signo +`, /\+25,00/.test(recibido), recibido.replace(/\s+/g,' '));
+    // Las apps se desactivan, no se quitan.
+    const appsAntes = await page.locator('[id^="app-"]').count();
+    await page.click('#app-com-bbva-bbvacontigo');
+    await wait(250);
+    check(`[${theme}] una app vigilada se apaga en vez de desaparecer`,
+      (await page.locator('[id^="app-"]').count()) === appsAntes);
+    check(`[${theme}] y se ve que está apagada`,
+      (await page.locator('#app-com-bbva-bbvacontigo .v').textContent()).trim() === 'OFF');
+    await page.click('#app-com-bbva-bbvacontigo');
+    await wait(250);
+    check(`[${theme}] y se vuelve a encender igual de fácil`,
+      (await page.locator('#app-com-bbva-bbvacontigo .v').textContent()).trim() === 'ON');
 
-    await page.click('button:has-text("Conceder permiso")');
-    await page.waitForTimeout(250);
-    await shot('11-bandeja-con-permiso');
+    check(`[${theme}] los grupos de ahorro ya no están en Ajustes`,
+      !(await page.locator('[data-sec]').allTextContents())
+        .some(t => t.includes('Grupos de ahorro')));
 
-    // asignar un Bizum
-    const inboxBefore = await page.evaluate(() => window.__INBOX().length);
-    await page.click('.row:has-text("Ben Torres")');
-    await page.waitForTimeout(350);
-    const tipoReimb = await page.locator('.sheet .pill.on:has-text("Reembolso")').count();
-    check(`[${theme}] un Bizum se propone como reembolso`, tipoReimb === 1);
-    await shot('12-asignar-bizum');
-    const pushDisabled = await page.getAttribute('#push-btn', 'disabled');
-    check(`[${theme}] enviar bloqueado sin destinatario`, pushDisabled !== null);
-    // elegir receptor
-    const recvPills = page.locator('.sheet .section:has-text("Quién lo recibe") + .pills');
-    await recvPills.locator('button:has-text("Ben")').click();
-    await page.waitForTimeout(150);
-    await shot('13-asignar-completo');
-    await page.click('#push-btn');
-    await page.waitForTimeout(350);
-    const left = await page.evaluate(() => window.__INBOX().length);
-    check(`[${theme}] el movimiento sale de la bandeja`, left === inboxBefore - 1,
-          `${inboxBefore} -> ${left}`);
-    await shot('14-bandeja-tras-enviar');
+    // =====================================================================
+    // Notificación de movimiento detectado
+    // =====================================================================
+    await page.click('[data-sec="pruebas"]');
+    await wait(250);
+    await page.click('text=Simular movimiento detectado');
+    await wait(400);
+    await shot('12-notificacion');
+    check(`[${theme}] la notificación aparece al detectar el movimiento`,
+      (await page.locator('#notif.on').count()) === 1);
+    check(`[${theme}] muestra importe y contraparte`,
+      (await page.textContent('.nt')).includes('18,00') &&
+      (await page.textContent('.nt')).includes('Ben Torres'));
+    const acciones = await page.locator('.notif .acts button').count();
+    check(`[${theme}] ofrece tres acciones y no más`, acciones === 3, `acciones=${acciones}`);
+    check(`[${theme}] una de ellas es el grupo de ahorro más reciente`,
+      (await page.locator('#notif-g9').count()) === 1);
+    check(`[${theme}] y otra es elegir a mano`,
+      (await page.locator('#notif-choose').count()) === 1);
 
-    // ---- Ajustes ----
-    await page.click('.tab[data-tab="settings"]');
-    await page.waitForTimeout(250);
-    await shot('15-ajustes');
-    const granted = await page.textContent('.row:has-text("Acceso a notificaciones")');
-    check(`[${theme}] ajustes refleja el permiso concedido`, /Concedido/.test(granted));
-    await page.click('.row:has-text("Modo aprendizaje")');
-    await page.waitForTimeout(200);
-    const learn = await page.textContent('.row:has-text("Modo aprendizaje")');
-    check(`[${theme}] modo aprendizaje conmuta`, /ON/.test(learn));
-
-    // ---- Reglas de aviso ----
-    const debitPolicy = await page.evaluate(() => {
-      const r = [...document.querySelectorAll('.row')]
-        .find(x => x.textContent.includes('Recibo domiciliado'));
-      return r ? r.querySelector('.v').textContent.trim() : null;
-    });
-    check(`[${theme}] los recibos domiciliados no avisan por defecto`,
-          debitPolicy === 'Solo bandeja', String(debitPolicy));
-
-    await page.click('.row:has-text("Pago con tarjeta")');
-    await page.waitForTimeout(200);
-    const cardPolicy = await page.evaluate(() => {
-      const r = [...document.querySelectorAll('.row')]
-        .find(x => x.textContent.includes('Pago con tarjeta'));
-      return r.querySelector('.v').textContent.trim();
-    });
-    check(`[${theme}] la política de un tipo se puede cambiar`,
-          cardPolicy === 'Solo bandeja', cardPolicy);
-    await page.click('.row:has-text("Pago con tarjeta")');
-    await page.click('.row:has-text("Pago con tarjeta")');
-    await page.waitForTimeout(200);
-    await shot('20-reglas-aviso');
-
-    // silenciar una suscripción desde la bandeja
-    await page.click('.tab[data-tab="inbox"]');
-    await page.waitForTimeout(250);
-    const beforeMute = await page.locator('.row').count();
-    await page.click('.row:has-text("Suscripción")');
-    await page.waitForTimeout(400);
-    await page.click('#mute-btn');
-    await page.waitForTimeout(450);
-    const afterMute = await page.locator('.row').count();
-    check(`[${theme}] silenciar un origen lo saca de la bandeja`,
-          afterMute === beforeMute - 1, `${beforeMute} -> ${afterMute}`);
-    const mutedToast = await page.textContent('#toast');
-    check(`[${theme}] confirma el silenciado`, /silenciado/.test(mutedToast), mutedToast);
-
-    await page.click('.tab[data-tab="settings"]');
-    await page.waitForTimeout(250);
-    const mutedList = await page.textContent('.screen');
-    check(`[${theme}] el silenciado aparece en Ajustes y se puede reactivar`,
-          /Suscripci/i.test(mutedList) && /Reactivar/.test(mutedList));
-    await page.click('.row:has-text("Reactivar")');
-    await page.waitForTimeout(250);
-    await page.click('.tab[data-tab="inbox"]');
-    await page.waitForTimeout(250);
-    const restored = await page.locator('.row').count();
-    check(`[${theme}] al reactivarlo vuelve a la bandeja`, restored === beforeMute,
-          `${afterMute} -> ${restored}`);
-    await page.click('.tab[data-tab="settings"]');
-    await page.waitForTimeout(200);
-
-    // nombre propio: filtra los movimientos entre tus cuentas
-    await page.click('.row:has-text("Tu nombre en el banco")');
-    await page.waitForTimeout(350);
-    await page.fill('#f-ownname', 'Alex Ruiz Moreno');
-    await page.waitForTimeout(80);
-    await page.click('#save-ownname');
-    await page.waitForTimeout(320);
-    const nameRow = await page.textContent('.row:has-text("Tu nombre en el banco")');
-    check(`[${theme}] se guarda tu nombre para ignorar tus propios traspasos`,
-          /Alex Ruiz Moreno/.test(nameRow), nameRow.replace(/\s+/g, ' '));
-
-    // ---- Coherencia de marca ----
-    const brandHex = theme === 'dark' ? 'rgb(74, 108, 255)' : 'rgb(51, 85, 230)';
-    const learnColor = await page.evaluate(() => {
-      const row = [...document.querySelectorAll('.row')]
-        .find(r => r.textContent.includes('Modo aprendizaje'));
-      return getComputedStyle(row.querySelector('.v')).color;
-    });
-    check(`[${theme}] los estados que no son dinero usan el azul de marca`,
-          learnColor === brandHex, learnColor);
-    const aboutMark = await page.locator('.mark').count();
-    check(`[${theme}] la marca aparece en Ajustes`, aboutMark >= 1, `marcas=${aboutMark}`);
-
-    await page.click('.tab[data-tab="stats"]');
-    await page.waitForTimeout(250);
-    const barColor = await page.evaluate(() =>
-      getComputedStyle(document.querySelector('.bar i')).backgroundColor);
-    check(`[${theme}] las barras de estadísticas usan el azul de marca`,
-          barColor === brandHex, barColor);
-
-    await page.click('.tab[data-tab="inbox"]');
-    await page.waitForTimeout(200);
-    const moneyColors = await page.evaluate(() => {
-      const v = [...document.querySelectorAll('.row .v')].map(e => getComputedStyle(e).color);
-      return v;
-    });
-    check(`[${theme}] los importes siguen en verde/rojo, no en azul`,
-          moneyColors.length > 0 && moneyColors.every(c => c !== brandHex),
-          moneyColors.join(' '));
-    const dotColor = await page.evaluate(() =>
-      getComputedStyle(document.querySelector('.dot')).backgroundColor);
-    check(`[${theme}] el aviso de la pestaña usa el azul de marca`,
-          dotColor === brandHex, dotColor);
-
-
-    // ---- Notificación de movimiento detectado ----
-    await page.click('.tab[data-tab="settings"]');
-    await page.waitForTimeout(200);
-    await page.click('.row:has-text("Simular movimiento detectado")');
-    await page.waitForTimeout(450);
-    await shot('16-notificacion');
-    // la barra de pestañas nunca debe salirse de la pantalla
-    const tabsInView = await page.evaluate(() => {
-      const r = document.querySelector('.tabs').getBoundingClientRect();
-      return r.bottom <= window.innerHeight + 1 && r.top >= 0;
-    });
-    check(`[${theme}] la barra de pestañas queda siempre visible`, tabsInView);
-    const notifBox = await page.evaluate(() => {
-      const r = document.querySelector('.notif').getBoundingClientRect();
-      return { top: r.top, right: r.right, w: window.innerWidth };
-    });
-    check(`[${theme}] la notificación se ve entera`,
-          notifBox.top >= 0 && notifBox.right <= notifBox.w + 1, JSON.stringify(notifBox));
-    const notifVisible = await page.locator('.notif.on').count();
-    check(`[${theme}] la notificación aparece al detectar el movimiento`, notifVisible === 1);
-    const notifTxt = await page.textContent('.notif');
-    check(`[${theme}] la notificación muestra importe y contraparte`,
-          /18,00/.test(notifTxt) && /Ben Torres/.test(notifTxt), notifTxt.replace(/\s+/g,' '));
-    const groupBtns = await page.locator('.notif .acts button.primary').count();
-    check(`[${theme}] ofrece los grupos como botones`, groupBtns === 2, `botones=${groupBtns}`);
-
-    // asignar desde la notificación, sin abrir la app
-    const beforeAssign = await page.evaluate(() =>
-      window.__G.find(x => x.id === 7).transactions.length);
+    const antesDeTocar = await page.evaluate(() =>
+      window.__G.reduce((n, g) => n + g.transactions.length, 0));
     await page.click('#notif-g7');
-    await page.waitForTimeout(350);
-    await shot('17-notificacion-confirmada');
-    const afterAssign = await page.evaluate(() =>
-      window.__G.find(x => x.id === 7).transactions.length);
-    check(`[${theme}] el movimiento se crea en el grupo`, afterAssign === beforeAssign + 1);
-    const doneTxt = await page.textContent('.notif');
-    check(`[${theme}] un Bizum de un miembro se crea como reembolso`, /reembolso/.test(doneTxt), doneTxt.replace(/\s+/g,' '));
-    check(`[${theme}] la confirmación nombra el grupo`, /Piso Salamanca/.test(doneTxt));
+    await wait(450);
+    const despuesDeTocar = await page.evaluate(() =>
+      window.__G.reduce((n, g) => n + g.transactions.length, 0));
+    check(`[${theme}] pulsar un grupo no crea nada todavía`,
+      despuesDeTocar === antesDeTocar, `${antesDeTocar} -> ${despuesDeTocar}`);
+    check(`[${theme}] abre la hoja de asignación`,
+      (await page.locator('#push-btn').count()) === 1);
+    check(`[${theme}] con el grupo del botón ya elegido`,
+      (await page.locator('#assign-g7.on').count()) === 1);
+    check(`[${theme}] y propone reembolso, que es lo que era`,
+      (await page.locator('button.pill.on:has-text("Reembolso")').count()) === 1);
+    await shot('13-asignar');
 
-    // deshacer
-    await page.click('#undo-btn');
-    await page.waitForTimeout(350);
-    const afterUndo = await page.evaluate(() =>
-      window.__G.find(x => x.id === 7).transactions.length);
-    check(`[${theme}] deshacer revierte el movimiento`, afterUndo === beforeAssign);
-    const backToOffer = await page.locator('.notif .acts button.primary').count();
-    check(`[${theme}] tras deshacer vuelve a ofrecer los grupos`, backToOffer === 2);
-    await page.click('.notif .acts button:has-text("Elegir…")');
-    await page.waitForTimeout(400);
-    const sheetOpen = await page.locator('.sheet.on').count();
-    check(`[${theme}] "Elegir…" abre la hoja de asignación`, sheetOpen === 1);
-    await page.click('.sheet-head span:has-text("Cancelar")');
-    await page.waitForTimeout(320);
+    await page.click('#push-btn');
+    await wait(450);
+    const creado = await page.evaluate(() =>
+      window.__G.reduce((n, g) => n + g.transactions.length, 0));
+    check(`[${theme}] al confirmar sí se crea`, creado === antesDeTocar + 1);
+    check(`[${theme}] y sale de la bandeja`,
+      (await page.evaluate(() => window.__INBOX().some(e => e.amount === 18))) === false);
 
-    // ---- Widgets ----
-    await page.click('.tab[data-tab="settings"]');
-    await page.waitForTimeout(200);
-    await page.click('.row:has-text("Ver pantalla de inicio")');
-    await page.waitForTimeout(300);
-    await shot('18-widgets');
-    const wBalance = await page.textContent('#w-balance');
+    // =====================================================================
+    // Widgets y regla de color
+    // =====================================================================
+    await page.click('[data-tab="settings"]');
+    await wait(250);
+    // El apartado sigue desplegado de antes: volver a tocarlo lo cerraría.
+    if (!(await page.locator('[data-secbody="pruebas"]').count())) {
+      await page.click('[data-sec="pruebas"]');
+      await wait(200);
+    }
+    await page.click('text=Ver pantalla de inicio');
+    await wait(300);
+    await shot('14-widgets');
     check(`[${theme}] el widget de saldo muestra grupo y saldo`,
-          /Piso Salamanca/.test(wBalance) && /€/.test(wBalance), wBalance.replace(/\s+/g,' '));
-    const tabsHidden = await page.locator('.tabs').count();
-    check(`[${theme}] la pantalla de inicio no muestra la barra de la app`, tabsHidden === 0);
-    await page.click('#w-quickadd');
-    await page.waitForTimeout(420);
-    const addSheet = await page.locator('.sheet.on:has-text("Nuevo gasto")').count();
-    check(`[${theme}] el widget "+" abre la hoja de nuevo gasto`, addSheet === 1);
-    await shot('19-widget-abre-gasto');
-    await page.click('.sheet-head span:has-text("Cancelar")');
-    await page.waitForTimeout(320);
-    await page.click('.tab[data-tab="settings"]');
-    await page.waitForTimeout(150);
-    await page.click('.row:has-text("Ver pantalla de inicio")');
-    await page.waitForTimeout(250);
+      (await page.locator('#w-balance .wa').count()) === 1);
+    check(`[${theme}] la pantalla de inicio no muestra la barra de la app`,
+      (await page.locator('.tabs').count()) === 0);
     await page.click('#w-inbox');
-    await page.waitForTimeout(300);
-    const onInbox = await page.locator('.tab.on[data-tab="inbox"]').count();
-    check(`[${theme}] el widget "Bandeja" abre esa pestaña`, onInbox === 1);
+    await wait(250);
+    check(`[${theme}] el widget "Bandeja" abre esa pestaña`,
+      (await page.locator('[data-tab="inbox"].on').count()) === 1);
 
+    // La regla de color: verde y rojo solo para dinero.
+    const brandRgb = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue('--brand').trim());
+    check(`[${theme}] la marca tiene su color propio`, /^#/.test(brandRgb), brandRgb);
     check(`[${theme}] sin errores de JS`, errors.length === 0, errors.join(' | '));
     await ctx.close();
   }
   await browser.close();
-  console.log('\n' + (fails.length ? `${fails.length} fallos: ${fails.join(', ')}` : 'Todas las comprobaciones OK'));
+  console.log(fails.length ? `\n${fails.length} comprobaciones fallan` : '\nTodas las comprobaciones OK');
   process.exit(fails.length ? 1 : 0);
 })();

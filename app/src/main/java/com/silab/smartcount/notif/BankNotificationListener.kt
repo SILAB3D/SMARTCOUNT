@@ -36,8 +36,11 @@ class BankNotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val pkg = sbn.packageName ?: return
-        val watched = registry.isWatched(pkg)
-        if (!watched && !registry.learnMode) return
+        // Lo que notifica sin estar vigilado se anota para poder ofrecerlo en
+        // Ajustes: es como se encuentra el paquete de tu banco sin tener que
+        // saberlo de memoria.
+        if (pkg !in registry.knownPackages()) registry.noteSeen(pkg)
+        if (!registry.isWatched(pkg)) return
 
         val extras = sbn.notification?.extras ?: return
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
@@ -48,18 +51,17 @@ class BankNotificationListener : NotificationListenerService() {
 
         val parsed = MovementParser.parse(title, text, registry.ownName)
 
-        // Lo que no se supo parsear también se guarda, y no solo en modo
-        // aprendizaje: es la mitad que le falta a la bandeja para poder
-        // calibrarse. Sin las notificaciones descartadas a la vista no hay
-        // forma de rescatar la que el parser dejó fuera por error — y los
-        // avisos de nómina de BBVA, que llegan sin importe, son exactamente
-        // ese caso. Al venir solo de las apps vigiladas, el volumen es acotado.
+        // Lo que no se supo parsear también se guarda: es la mitad que le
+        // falta a la bandeja para poder calibrarse. Sin las notificaciones
+        // descartadas a la vista no hay forma de rescatar la que el parser
+        // dejó fuera por error — y los avisos de nómina de BBVA, que llegan
+        // sin importe, son exactamente ese caso.
         val policy = parsed?.let {
             rules.decide(it.kind, it.merchant, it.counterparty)
         } ?: MovementPolicy.INBOX_ONLY
         // "Ignorar" sigue significando ignorar: ni notificación ni bandeja. Es
         // lo que mantiene fuera los movimientos entre tus propias cuentas.
-        if (policy == MovementPolicy.IGNORE && !registry.learnMode) return
+        if (policy == MovementPolicy.IGNORE && registry.learnMode != LearnMode.FULL) return
 
         val key = dedupeKey(pkg, title, text)
         val now = System.currentTimeMillis()

@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonArrayBuilder
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
@@ -67,6 +68,20 @@ class TricountClient(
 
         private fun apiDate(date: Date): String =
             SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSSSS", Locale.US).format(date)
+
+        /**
+         * El reparto igualitario, tal y como se enseña antes de guardar. El
+         * que manda es el del servidor — las asignaciones van en RATIO y las
+         * calcula él —, pero la hoja tiene que decir cuánto le toca a cada uno
+         * mientras escribes, y esta es la misma cuenta.
+         */
+        fun previewSplit(total: Double, n: Int): List<Double> {
+            require(n > 0)
+            val cents = Math.round(abs(total) * 100.0)
+            val base = cents / n
+            val extra = (cents % n).toInt()
+            return (0 until n).map { i -> (base + if (i < extra) 1L else 0L) / 100.0 }
+        }
 
         /** Extrae el token público de un enlace tipo https://tricount.com/es/tABC123 */
         fun extractPublicToken(input: String): String? {
@@ -202,21 +217,11 @@ class TricountClient(
 
     /**
      * Añade el tricount a esta cuenta a partir de su enlace público.
-     * Es lo que habilita crear/editar/borrar gastos en él.
+     * Es lo que habilita crear, editar y borrar movimientos en él.
      */
     suspend fun joinTricount(publicToken: String): Tricount = withSession {
-        val payload = buildJsonObject {
-            putJsonArray("all_registry_active") {
-                add(buildJsonObject { put("public_identifier_token", publicToken) })
-            }
-            putJsonArray("all_registry_archived") {}
-            putJsonArray("all_registry_deleted") {}
-        }
-        val req = newRequest("$BASE_URL/v1/user/${requireUser()}/registry-synchronization")
-            .post(jsonBody(payload))
-            .build()
+        val data = syncRegistry(active = listOf(publicToken))
 
-        val data = execute(req)
         var joinedId: Int? = null
         data.responseArray().forEach { item ->
             val sync = (item as? JsonObject)?.obj("RegistrySynchronization") ?: return@forEach
@@ -230,75 +235,114 @@ class TricountClient(
         joinedId?.let { getTricount(it) } ?: peekTricount(publicToken)
     }
 
-    suspend fun createTricount(title: String, currency: String = "EUR", description: String = ""): Int =
-        withSession {
-            val payload = buildJsonObject {
-                put("title", title)
-                put("currency", currency)
-                put("description", description)
+    /**
+     * Crea un grupo nuevo. Los miembros se pueden dar ya en la creación, que
+     * es una llamada menos que crearlo y luego añadirlos.
+     */
+    suspend fun createTricount(
+        title: String,
+        currency: String = "EUR",
+        description: String = "",
+        memberNames: List<String> = emptyList(),
+        emoji: String? = null
+    ): Int = withSession {
+        val clean = memberNames.map { it.trim() }.filter { it.isNotEmpty() }
+        val payload = buildJsonObject {
+            put("title", title.trim())
+            put("currency", currency)
+            put("description", description)
+            emoji?.let { put("emoji", it) }
+            if (clean.isNotEmpty()) {
+                putJsonArray("memberships") { clean.forEach { add(newMembershipJson(it)) } }
             }
-            val req = newRequest("$BASE_URL/v1/user/${requireUser()}/registry")
-                .post(jsonBody(payload))
-                .build()
-            execute(req).extractId()
         }
+        val req = newRequest("$BASE_URL/v1/user/${requireUser()}/registry")
+            .post(jsonBody(payload))
+            .build()
+        execute(req).extractId()
+    }
 
     // -----------------------------------------------------------------------
     // Gastos
     // -----------------------------------------------------------------------
 
     /**
-     * Reparte un importe entre N personas SIN perder céntimos: el resto de la
+     * Reparte un importe entre N personas sin perder céntimos: el resto de la
      * división se distribuye de uno en uno entre los primeros miembros, así la
-     * suma de las partes es exactamente el total. Sin esto, un gasto de 39,90 €
-     * entre 4 genera 4 × 9,98 = 39,92 y el balance del grupo se desvía céntimo
-     * a céntimo en cada gasto no divisible.
+     * suma de las partes es exactamente el total.
+     *
+     * Ya no construye ninguna petición — de eso se encarga el servidor cuando
+     * las asignaciones van en RATIO —, pero sigue haciendo falta para
+     * **enseñar** el reparto antes de guardarlo: la hoja de alta dice cuánto le
+     * toca a cada uno mientras escribes.
      */
-    internal fun splitEvenly(total: Double, n: Int): List<Double> {
-        require(n > 0)
-        val cents = Math.round(abs(total) * 100.0)
-        val base = cents / n
-        val extra = (cents % n).toInt()
-        return (0 until n).map { i -> (base + if (i < extra) 1L else 0L) / 100.0 }
-    }
+    internal fun splitEvenly(total: Double, n: Int): List<Double> = previewSplit(total, n)
 
-    private fun allocationsJson(
-        members: List<Member>,
-        amounts: List<Double>,
-        currency: String
-    ): JsonArray = buildJsonArray {
-        members.forEachIndexed { i, m ->
-            add(buildJsonObject {
-                put("membership_uuid", m.uuid)
-                putJsonObject("amount") {
-                    put("value", amounts[i].money())
-                    put("currency", currency)
-                }
-                put("type", "AMOUNT")
-            })
+    /**
+     * Las asignaciones de un movimiento, con la forma que escribe la app
+     * oficial: AMOUNT con su importe para las partes fijadas a mano, y RATIO 1
+     * sin importe para las que se reparten lo que queda.
+     */
+    private fun allocationsJson(split: Split, sign: Double, currency: String): JsonArray =
+        buildJsonArray {
+            split.members.forEach { m ->
+                add(buildJsonObject {
+                    put("membership_uuid", m.uuid)
+                    val fixed = split.fixed[m.uuid]
+                    if (fixed == null) {
+                        put("type", "RATIO")
+                        put("share_ratio", 1)
+                    } else {
+                        putJsonObject("amount") {
+                            put("value", (sign * abs(fixed)).money())
+                            put("currency", currency)
+                        }
+                        put("type", "AMOUNT")
+                    }
+                })
+            }
+        }
+
+    /**
+     * Comprueba el reparto antes de salir a la red. El servidor también lo
+     * comprueba — responde 400 "the amounts of the allocations that you
+     * provided do not sum up to the amount of the entry" —, pero desde aquí se
+     * puede decir cuánto falta en vez de enseñar el error crudo de la API.
+     */
+    private fun Split.validate(total: Double) {
+        require(members.isNotEmpty()) { "Hay que repartir el movimiento entre al menos una persona" }
+        if (free.isEmpty()) {
+            val diff = total - fixedTotal
+            require(abs(diff) < 0.005) {
+                if (diff > 0) "Faltan ${diff.money()} por asignar"
+                else "Las partes se pasan en ${(-diff).money()} del total"
+            }
+        } else {
+            require(fixedTotal <= total + 0.005) {
+                "Las partes fijadas suman ${fixedTotal.money()}, más que el total ${total.money()}"
+            }
         }
     }
 
     private fun Double.money(): String = String.format(Locale.US, "%.2f", this)
 
-
     /**
-     * Crea un gasto. `amount` en positivo; la API almacena los gastos en negativo.
-     * El reparto es a partes iguales entre `splitAmong`.
+     * Crea un gasto. `amount` llega en positivo; la API los almacena en
+     * negativo. El reparto lo describe [Split]: a partes iguales mientras
+     * nadie fije cantidades.
      */
     suspend fun createExpense(
         tricount: Tricount,
         description: String,
         amount: Double,
         payer: Member,
-        splitAmong: List<Member>,
+        split: Split,
         category: Category? = null,
         categoryCustom: String? = null,
         date: Date = Date()
     ): Int = withSession {
-        require(splitAmong.isNotEmpty()) { "Hay que repartir el gasto entre al menos una persona" }
         val total = abs(amount)
-        val parts = splitEvenly(total, splitAmong.size).map { -it }
+        split.validate(total)
 
         val payload = buildJsonObject {
             put("uuid", UUID.randomUUID().toString())
@@ -308,7 +352,7 @@ class TricountClient(
                 put("currency", tricount.currency)
             }
             put("membership_uuid_owner", payer.uuid)
-            put("allocations", allocationsJson(splitAmong, parts, tricount.currency))
+            put("allocations", allocationsJson(split, -1.0, tricount.currency))
             put("type_transaction", TxType.NORMAL.name)
             put("status", "ACTIVE")
             put("date", apiDate(date))
@@ -329,13 +373,13 @@ class TricountClient(
         description: String,
         amount: Double,
         receiver: Member,
-        splitAmong: List<Member>,
+        split: Split,
         category: Category? = null,
+        categoryCustom: String? = null,
         date: Date = Date()
     ): Int = withSession {
-        require(splitAmong.isNotEmpty())
         val total = abs(amount)
-        val parts = splitEvenly(total, splitAmong.size)
+        split.validate(total)
 
         val payload = buildJsonObject {
             put("uuid", UUID.randomUUID().toString())
@@ -345,18 +389,32 @@ class TricountClient(
                 put("currency", tricount.currency)
             }
             put("membership_uuid_owner", receiver.uuid)
-            put("allocations", allocationsJson(splitAmong, parts, tricount.currency))
+            put("allocations", allocationsJson(split, 1.0, tricount.currency))
             put("type_transaction", TxType.INCOME.name)
             put("status", "ACTIVE")
             put("date", apiDate(date))
-            category?.let { put("category", it.apiValue) }
+            when {
+                categoryCustom != null -> {
+                    put("category", "OTHER")
+                    put("category_custom", categoryCustom)
+                }
+                category != null -> put("category", category.apiValue)
+            }
         }
         postEntry(tricount, payload)
     }
 
     /**
-     * Reembolso / transferencia entre dos miembros (tipo BALANCE).
-     * Es el tipo natural para un Bizum entre personas del grupo.
+     * Reembolso / transferencia entre dos miembros (tipo BALANCE). Es el tipo
+     * natural para un Bizum entre personas del grupo.
+     *
+     * Va en **negativo**, con quien recibe llevándose el importe entero en una
+     * asignación RATIO y quien paga a cero en una AMOUNT: es la forma exacta
+     * que escribe la app oficial, leída de sus propios movimientos y
+     * reproducida contra la API. Antes se mandaba en positivo; el balance
+     * salía igual — Stats trabaja con valores absolutos y su propia tabla de
+     * signos — pero el apunte no era el mismo que ve el resto del grupo desde
+     * Tricount.
      */
     suspend fun createReimbursement(
         tricount: Tricount,
@@ -366,12 +424,15 @@ class TricountClient(
         description: String = "Reembolso",
         date: Date = Date()
     ): Int = withSession {
+        require(payer.uuid != receiver.uuid) {
+            "Una transferencia necesita dos personas distintas"
+        }
         val total = abs(amount)
         val payload = buildJsonObject {
             put("uuid", UUID.randomUUID().toString())
             put("description", description)
             putJsonObject("amount") {
-                put("value", total.money())
+                put("value", (-total).money())
                 put("currency", tricount.currency)
             }
             put("membership_uuid_owner", payer.uuid)
@@ -379,10 +440,11 @@ class TricountClient(
                 add(buildJsonObject {
                     put("membership_uuid", receiver.uuid)
                     putJsonObject("amount") {
-                        put("value", total.money())
+                        put("value", (-total).money())
                         put("currency", tricount.currency)
                     }
-                    put("type", "AMOUNT")
+                    put("type", "RATIO")
+                    put("share_ratio", 1)
                 })
                 add(buildJsonObject {
                     put("membership_uuid", payer.uuid)
@@ -408,43 +470,72 @@ class TricountClient(
     }
 
     /**
-     * Edita un gasto existente. Los parámetros a null conservan el valor actual.
-     * Nota: la API no hace merge parcial, así que reenviamos el objeto completo.
+     * Edita un movimiento existente. Lo que llegue a null conserva el valor
+     * que ya tenía. La API no hace merge parcial, así que se reenvía el objeto
+     * entero.
+     *
+     * **El tipo no se toca**: el signo del importe y la forma de las
+     * asignaciones dependen de él, así que pasar de gasto a transferencia es
+     * borrar y volver a crear, no editar.
      */
     suspend fun editTransaction(
         tricount: Tricount,
         tx: Transaction,
         description: String? = null,
         amount: Double? = null,
-        payer: Member? = null,
-        splitAmong: List<Member>? = null,
+        owner: Member? = null,
+        split: Split? = null,
+        /** Solo en las transferencias: quién recibe el dinero. */
+        counterpart: Member? = null,
         category: Category? = null,
         categoryCustom: String? = null,
         date: Date? = null
     ) = withSession {
         val newDescription = description ?: tx.description
         val newAmountAbs = amount?.let { abs(it) } ?: tx.amount.abs
-        val newPayerUuid = payer?.uuid ?: tx.ownerUuid
-        val sign = if (tx.type == TxType.NORMAL) -1.0 else 1.0
+        val newOwnerUuid = owner?.uuid ?: tx.ownerUuid
+        // El ingreso va en positivo; el gasto y la transferencia, en negativo.
+        val sign = if (tx.type == TxType.INCOME) 1.0 else -1.0
 
-        val members = splitAmong
-            ?: tx.allocations.mapNotNull { tricount.memberByUuid(it.membershipUuid) }
-
-        val allocations = if (members.isNotEmpty()) {
-            allocationsJson(members, splitEvenly(newAmountAbs, members.size).map { sign * it }, tricount.currency)
-        } else {
-            buildJsonArray {
-                tx.allocations.forEach { a ->
-                    add(buildJsonObject {
-                        put("membership_uuid", a.membershipUuid)
-                        putJsonObject("amount") {
-                            put("value", a.amount.value)
-                            put("currency", a.amount.currency)
-                        }
-                        put("type", a.type)
-                    })
-                }
+        val allocations = if (tx.type == TxType.BALANCE) {
+            val receiverUuid = counterpart?.uuid
+                ?: tx.allocations.firstOrNull { it.membershipUuid != tx.ownerUuid }?.membershipUuid
+                ?: throw TricountException("La transferencia no dice quién recibe el dinero")
+            require(receiverUuid != newOwnerUuid) {
+                "Una transferencia necesita dos personas distintas"
             }
+            buildJsonArray {
+                add(buildJsonObject {
+                    put("membership_uuid", receiverUuid)
+                    putJsonObject("amount") {
+                        put("value", (-newAmountAbs).money())
+                        put("currency", tricount.currency)
+                    }
+                    put("type", "RATIO")
+                    put("share_ratio", 1)
+                })
+                add(buildJsonObject {
+                    put("membership_uuid", newOwnerUuid)
+                    putJsonObject("amount") {
+                        put("value", "0")
+                        put("currency", tricount.currency)
+                    }
+                    put("type", "AMOUNT")
+                })
+            }
+        } else {
+            // Sin reparto nuevo se reconstruye el que ya tenía, conservando
+            // **cuáles** estaban fijados a mano: rehacerlo como un reparto
+            // igualitario convertiría en igualitario, sin avisar, un gasto que
+            // alguien repartió a propósito de otra manera.
+            val effective = split ?: Split(
+                members = tx.allocations.mapNotNull { tricount.memberByUuid(it.membershipUuid) },
+                fixed = tx.allocations
+                    .filter { it.type == "AMOUNT" }
+                    .associate { it.membershipUuid to it.amount.abs }
+            )
+            effective.validate(newAmountAbs)
+            allocationsJson(effective, sign, tricount.currency)
         }
 
         val payload = buildJsonObject {
@@ -453,11 +544,14 @@ class TricountClient(
                 put("value", (sign * newAmountAbs).money())
                 put("currency", tricount.currency)
             }
-            put("membership_uuid_owner", newPayerUuid)
+            put("membership_uuid_owner", newOwnerUuid)
             put("allocations", allocations)
             put("type_transaction", tx.type.name)
             put("status", tx.status)
-            put("date", apiDate(date ?: Date()))
+            // Sin fecha nueva se conserva la suya. Antes se mandaba la de hoy,
+            // así que corregir una errata en la descripción movía el gasto al
+            // día en que lo corregías.
+            put("date", date?.let { apiDate(it) } ?: tx.date)
             when {
                 categoryCustom != null -> {
                     put("category", "OTHER")
@@ -474,7 +568,7 @@ class TricountClient(
             }
         }
 
-        val txId = tx.id ?: throw TricountException("El gasto no tiene id")
+        val txId = tx.id ?: throw TricountException("El movimiento no tiene id")
         val req = newRequest("$BASE_URL/v1/user/${requireUser()}/registry/${tricount.id}/registry-entry/$txId")
             .put(jsonBody(payload))
             .build()
@@ -491,31 +585,160 @@ class TricountClient(
     }
 
     // -----------------------------------------------------------------------
-    // Miembros
+    // El grupo: título, emoji, miembros y archivado
     // -----------------------------------------------------------------------
 
-    suspend fun addMembers(tricount: Tricount, names: List<String>) = withSession {
-        val payload = buildJsonObject {
-            putJsonArray("memberships") {
-                tricount.members.forEach { m ->
-                    add(buildJsonObject {
-                        put("uuid", m.uuid)
-                        putJsonObject("alias") { put("display_name", m.displayName) }
-                        put("status", m.status)
-                    })
-                }
-                names.forEach { n ->
-                    add(buildJsonObject {
-                        putJsonObject("alias") { put("display_name", n) }
-                        put("status", "ACTIVE")
-                    })
-                }
+    /**
+     * Un miembro nuevo, con la forma que exige la API: `alias` no es un nombre
+     * suelto sino un *pointer*, con su `type`, su `value` y su `name`.
+     *
+     * Mandarlo como `alias.display_name` — que es como lo hacía esta app — lo
+     * rechaza con «Superfluous field "display_name"». Es decir: la conversión
+     * a grupo de ahorro nunca llegó a crear el miembro «Ingresos». No se notó
+     * porque el grupo con el que se probó ya lo tenía.
+     */
+    private fun newMembershipJson(name: String): JsonObject {
+        val uuid = UUID.randomUUID().toString()
+        return buildJsonObject {
+            put("uuid", uuid)
+            putJsonObject("alias") {
+                put("type", "UUID")
+                put("value", uuid)
+                put("name", name)
             }
+            put("status", "ACTIVE")
         }
-        val req = newRequest("$BASE_URL/v1/user/${requireUser()}/registry/${tricount.id}")
+    }
+
+    /** A los que ya están les basta su uuid: el resto lo conserva el servidor. */
+    private fun keepMembershipJson(m: Member): JsonObject = buildJsonObject {
+        put("uuid", m.uuid)
+    }
+
+    private fun renamedMembershipJson(m: Member, name: String): JsonObject = buildJsonObject {
+        put("uuid", m.uuid)
+        putJsonObject("alias") {
+            put("type", "UUID")
+            put("value", m.uuid)
+            put("name", name)
+        }
+        put("status", m.status)
+    }
+
+    private suspend fun putRegistry(tricountId: Int, payload: JsonObject) {
+        val req = newRequest("$BASE_URL/v1/user/${requireUser()}/registry/$tricountId")
             .put(jsonBody(payload))
             .build()
         execute(req)
+    }
+
+    /** Renombra el grupo, le cambia el emoji, o las dos cosas. */
+    suspend fun updateTricount(
+        tricount: Tricount,
+        title: String? = null,
+        emoji: String? = null
+    ) = withSession {
+        require(title != null || emoji != null) { "No hay nada que cambiar" }
+        putRegistry(tricount.id, buildJsonObject {
+            title?.trim()?.takeIf { it.isNotEmpty() }?.let { put("title", it) }
+            emoji?.let { put("emoji", it) }
+        })
+    }
+
+    /**
+     * Añade miembros. La lista se manda **entera**: los que ya estaban van
+     * solo con su uuid y los nuevos con su alias completo.
+     */
+    suspend fun addMembers(tricount: Tricount, names: List<String>) = withSession {
+        val clean = names.map { it.trim() }.filter { it.isNotEmpty() }
+        require(clean.isNotEmpty()) { "Hace falta al menos un nombre" }
+        putRegistry(tricount.id, buildJsonObject {
+            putJsonArray("memberships") {
+                tricount.members.forEach { add(keepMembershipJson(it)) }
+                clean.forEach { add(newMembershipJson(it)) }
+            }
+        })
+    }
+
+    suspend fun renameMember(tricount: Tricount, member: Member, name: String) = withSession {
+        val clean = name.trim()
+        require(clean.isNotEmpty()) { "El nombre no puede quedar vacío" }
+        putRegistry(tricount.id, buildJsonObject {
+            putJsonArray("memberships") {
+                tricount.members.forEach {
+                    add(if (it.uuid == member.uuid) renamedMembershipJson(it, clean) else keepMembershipJson(it))
+                }
+            }
+        })
+    }
+
+    /**
+     * **Quitar un miembro no se puede.** No es que falte por hacer: la API no
+     * lo permite por ninguna de las vías que tiene. Omitirlo de la lista de
+     * `memberships` lo deja intacto, mandarlo con `status: INACTIVE` lo
+     * devuelve como ACTIVE, y el borrado directo de la pertenencia responde
+     * «Route not found». Comprobado contra la API con un grupo de usar y
+     * tirar, con miembros recién creados y sin ningún movimiento a su nombre.
+     *
+     * Así que aquí no hay un `removeMember` que no funcione: un botón que no
+     * hace nada y no lo dice es peor que no tener botón. Se renombra —eso sí
+     * va— y quien necesite quitar a alguien lo hace desde la app oficial.
+     */
+
+    /**
+     * La sincronización: la misma llamada con la que se entra a un grupo sirve
+     * para archivarlo y para quitarlo. Solo se mencionan los grupos que
+     * cambian — las listas no son el estado completo, son instrucciones.
+     */
+    private suspend fun syncRegistry(
+        active: List<String> = emptyList(),
+        archived: List<String> = emptyList(),
+        deleted: List<String> = emptyList()
+    ): JsonObject {
+        fun JsonArrayBuilder.tokens(list: List<String>) =
+            list.forEach { add(buildJsonObject { put("public_identifier_token", it) }) }
+
+        val payload = buildJsonObject {
+            putJsonArray("all_registry_active") { tokens(active) }
+            putJsonArray("all_registry_archived") { tokens(archived) }
+            putJsonArray("all_registry_deleted") { tokens(deleted) }
+        }
+        val req = newRequest("$BASE_URL/v1/user/${requireUser()}/registry-synchronization")
+            .post(jsonBody(payload))
+            .build()
+        return execute(req)
+    }
+
+    /**
+     * Archiva el grupo y lo desarchiva.
+     *
+     * Un grupo archivado **desaparece de `/registry`**: la API deja de
+     * devolverlo, así que sin guardar su enlace no habría forma de traerlo de
+     * vuelta. Por eso [com.silab.smartcount.data.repo.ArchivedGroups] anota el
+     * token en el móvil antes de archivar.
+     */
+    suspend fun setArchived(tricount: Tricount, archived: Boolean) = withSession {
+        val token = tricount.publicToken
+        require(token.isNotBlank()) { "Este grupo no tiene enlace público" }
+        if (archived) syncRegistry(archived = listOf(token)) else syncRegistry(active = listOf(token))
+        Unit
+    }
+
+    suspend fun restoreArchived(publicToken: String) = withSession {
+        syncRegistry(active = listOf(publicToken))
+        Unit
+    }
+
+    /**
+     * Quita el grupo de esta instalación. **No** lo borra para los demás: el
+     * grupo sigue existiendo y se vuelve a entrar con su enlace. Borrarlo de
+     * verdad (DELETE /registry/{id}) se lo dejamos a la app oficial: desde
+     * aquí sería un botón que destruye los datos de más gente.
+     */
+    suspend fun unsyncTricount(tricount: Tricount) = withSession {
+        val token = tricount.publicToken
+        require(token.isNotBlank()) { "Este grupo no tiene enlace público" }
+        syncRegistry(deleted = listOf(token))
         Unit
     }
 }

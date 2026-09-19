@@ -5,12 +5,15 @@ import androidx.room.Room
 import com.silab.smartcount.data.api.CredentialStore
 import com.silab.smartcount.data.api.TricountClient
 import com.silab.smartcount.data.db.AppDatabase
+import com.silab.smartcount.data.db.MIGRATION_4_5
 import com.silab.smartcount.data.cache.GroupCache
 import com.silab.smartcount.notif.BankRegistry
 import com.silab.smartcount.notif.DetectionNotifier
+import com.silab.smartcount.data.repo.ArchivedGroups
 import com.silab.smartcount.data.repo.MemberIdentity
 import com.silab.smartcount.data.repo.SavingsGroups
 import com.silab.smartcount.notif.NotificationRules
+import com.silab.smartcount.update.UpdateNotifier
 
 class SmartCountApp : Application() {
 
@@ -28,12 +31,16 @@ class SmartCountApp : Application() {
         private set
     lateinit var savingsGroups: SavingsGroups
         private set
+    lateinit var archivedGroups: ArchivedGroups
+        private set
     lateinit var memberIdentity: MemberIdentity
         private set
 
     override fun onCreate() {
         super.onCreate()
         database = Room.databaseBuilder(this, AppDatabase::class.java, "tricount-companion.db")
+            // La bandeja es el histórico de lo detectado: se migra, no se tira.
+            .addMigrations(MIGRATION_4_5)
             .fallbackToDestructiveMigration()
             .build()
         credentials = CredentialStore.create(this)
@@ -45,6 +52,9 @@ class SmartCountApp : Application() {
         groupCache = GroupCache(this)
         notificationRules = NotificationRules(this)
         savingsGroups = SavingsGroups(this)
+        archivedGroups = ArchivedGroups(this)
         DetectionNotifier.ensureChannel(this)
+        UpdateNotifier.ensureChannel(this)
+        UpdateNotifier.schedule(this)
     }
 }

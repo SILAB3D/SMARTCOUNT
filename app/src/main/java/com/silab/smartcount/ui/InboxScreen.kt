@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,7 +36,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silab.smartcount.data.api.Member
 import com.silab.smartcount.data.api.Tricount
 import com.silab.smartcount.data.db.Confidence
+import com.silab.smartcount.data.db.InboxClass
 import com.silab.smartcount.data.db.InboxEntry
+import com.silab.smartcount.notif.AssignPlan
 import com.silab.smartcount.notif.BankNotificationListener
 import com.silab.smartcount.ui.theme.ScreenPadding
 import com.silab.smartcount.ui.theme.SmartTheme
@@ -48,17 +51,21 @@ import java.util.Locale
 // ===========================================================================
 
 /**
- * Todo lo que han dicho las apps de banco, en dos grupos: lo que el parser ha
- * reconocido como un movimiento y lo que no.
+ * Todo lo que han dicho las apps del móvil, en tres cajones.
  *
- * Enseñar también lo descartado es lo que convierte la bandeja en un sitio
- * donde se calibra el sistema y no solo donde se recogen resultados. El parser
- * se equivoca en las dos direcciones, y las dos equivocaciones no cuestan
- * igual: un aviso comercial colado entre los movimientos se aparta de un
- * toque, pero un movimiento que el parser descartó — la nómina que BBVA
- * notifica sin importe es el caso de libro — se perdía sin dejar rastro. Ahora
- * cualquiera de los dos se mueve al otro grupo, y esa decisión manda sobre la
- * del parser.
+ * Eran dos —movimiento y no movimiento— y no daban para lo que hay que
+ * decidir. Un aviso de tu banco que no es un cargo y la notificación de un
+ * juego no son la misma cosa aunque las dos «no sean movimientos»: la primera
+ * viene de una app que quieres seguir mirando y la segunda de una que no.
+ * Separarlas permite que cada una tenga la acción que le corresponde —vigilar
+ * la app, o dejar de seguirla— en vez de una sola papelera para las dos.
+ *
+ * Enseñar lo descartado es lo que convierte la bandeja en el sitio donde se
+ * calibra el sistema y no solo donde se recogen resultados. El parser se
+ * equivoca en las dos direcciones, y las dos equivocaciones no cuestan igual:
+ * un aviso comercial colado entre los movimientos se aparta de un toque, pero
+ * un movimiento descartado por error — la nómina que BBVA notifica sin
+ * importe es el caso de libro — se perdía sin dejar rastro.
  */
 @Composable
 fun InboxScreen(
@@ -71,26 +78,44 @@ fun InboxScreen(
     val context = LocalContext.current
     val hasAccess = remember { BankNotificationListener.hasAccess(context) }
     var assigning by remember { mutableStateOf<InboxEntry?>(null) }
+    var preselected by remember { mutableStateOf<Int?>(null) }
+    var showHistory by remember { mutableStateOf(false) }
+    val history by vm.inboxHistory.collectAsStateWithLifecycle()
 
-    // Tocar la notificación abre directamente la hoja de ese movimiento.
+    // La notificación abre directamente la hoja de ese movimiento, y con el
+    // grupo que se eligió desde ella ya marcado.
     val focused by vm.focusedEntry.collectAsStateWithLifecycle()
     LaunchedEffect(focused, inbox) {
-        val id = focused ?: return@LaunchedEffect
-        inbox.firstOrNull { it.id == id }?.let {
+        val focus = focused ?: return@LaunchedEffect
+        inbox.firstOrNull { it.id == focus.entryId }?.let {
             assigning = it
+            preselected = focus.groupId
             vm.focusInboxEntry(null)
         }
     }
     val fmt = remember { SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()) }
 
-    val movements = inbox.filter { it.isBankMovement }
-    val others = inbox.filterNot { it.isBankMovement }
+    val byClass = inbox.groupBy { it.classification }
+    val movements = byClass[InboxClass.BANK].orEmpty()
+    val others = byClass[InboxClass.OTHER].orEmpty()
+    val nonBank = byClass[InboxClass.NON_BANK].orEmpty()
 
     LazyColumn(
         modifier.fillMaxSize().background(c.background),
         contentPadding = PaddingValues(bottom = 32.dp)
     ) {
-        item { ScreenTitle("Bandeja") }
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(ScreenPadding),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Bandeja", style = MaterialTheme.typography.headlineLarge, color = c.primaryText)
+                if (history.isNotEmpty()) {
+                    SecondaryButton("Enviados") { showHistory = true }
+                }
+            }
+        }
 
         if (!hasAccess) {
             item {
@@ -103,7 +128,7 @@ fun InboxScreen(
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "Sin ese permiso SmartCount no puede ver tus movimientos. Solo se " +
-                            "leen las apps de banco que elijas y nada sale del móvil.",
+                            "leen las apps que elijas y nada sale del móvil.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = c.secondaryText
                     )
@@ -139,46 +164,72 @@ fun InboxScreen(
             )
             Spacer(Modifier.height(4.dp))
             HeroCaption(
-                if (others.isEmpty()) {
-                    "Nada descartado"
-                } else {
-                    "${others.size} notificaciones descartadas, abajo"
-                }
+                listOfNotNull(
+                    others.size.takeIf { it > 0 }?.let { "$it en otros eventos" },
+                    nonBank.size.takeIf { it > 0 }?.let { "$it no bancarios" }
+                ).joinToString(" · ").ifBlank { "Nada descartado" }
             )
             Spacer(Modifier.height(16.dp))
         }
 
-        if (movements.isNotEmpty()) {
-            item { SectionHeader("Movimientos bancarios") }
-            items(movements, key = { it.id }) { e ->
-                InboxRow(e, fmt) { assigning = e }
-                SmartDivider()
-            }
-        }
+        section(
+            entries = movements,
+            title = InboxClass.BANK.label,
+            explanation = null,
+            fmt = fmt
+        ) { assigning = it; preselected = null }
 
-        if (others.isNotEmpty()) {
-            item {
-                SectionHeader("No parecen movimientos")
-                Text(
-                    "Si alguno sí lo era, ábrelo y márcalo: a partir de ahí se comporta " +
-                        "como cualquier otro movimiento.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = c.secondaryText,
-                    modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 4.dp)
-                )
-            }
-            items(others, key = { it.id }) { e ->
-                InboxRow(e, fmt) { assigning = e }
-                SmartDivider()
-            }
-        }
+        section(
+            entries = others,
+            title = InboxClass.OTHER.label,
+            explanation = "Llegaron de apps que miramos, pero no parecen un cargo ni un abono. " +
+                "Si alguno lo era, ábrelo y márcalo.",
+            fmt = fmt
+        ) { assigning = it; preselected = null }
+
+        section(
+            entries = nonBank,
+            title = InboxClass.NON_BANK.label,
+            explanation = "Sus apps han dejado de vigilarse. Puedes volver a activarlas en Ajustes.",
+            fmt = fmt
+        ) { assigning = it; preselected = null }
     }
 
     assigning?.let { entry ->
         // La lista viene del flujo, así que la entrada se relee para que el
-        // cambio de "no es un movimiento" a "sí lo es" se vea sin cerrar nada.
+        // cambio de cajón se vea sin cerrar nada.
         val live = inbox.firstOrNull { it.id == entry.id } ?: entry
-        AssignSheet(vm, live, state) { assigning = null }
+        AssignSheet(vm, live, state, preselected) { assigning = null; preselected = null }
+    }
+
+    if (showHistory) {
+        HistorySheet(history, state, fmt) { showHistory = false }
+    }
+}
+
+/** Un cajón de la bandeja, con su explicación si hace falta. */
+private fun LazyListScope.section(
+    entries: List<InboxEntry>,
+    title: String,
+    explanation: String?,
+    fmt: SimpleDateFormat,
+    onClick: (InboxEntry) -> Unit
+) {
+    if (entries.isEmpty()) return
+    item(key = "head-$title") {
+        SectionHeader(title)
+        if (explanation != null) {
+            Text(
+                explanation,
+                style = MaterialTheme.typography.bodySmall,
+                color = SmartTheme.colors.secondaryText,
+                modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 4.dp)
+            )
+        }
+    }
+    items(entries, key = { it.id }) { e ->
+        InboxRow(e, fmt) { onClick(e) }
+        SmartDivider()
     }
 }
 
@@ -191,7 +242,7 @@ private fun InboxRow(e: InboxEntry, fmt: SimpleDateFormat, onClick: () -> Unit) 
         subtitle = buildString {
             append(if (e.isBankMovement) e.kind.label else e.bankLabel)
             if (e.confidence == Confidence.LOW && e.isBankMovement) append(" · revisar")
-            if (e.userMovement != null) append(" · a mano")
+            if (e.userClass != null) append(" · a mano")
             append(" · ")
             append(fmt.format(Date(e.detectedAt)))
         },
@@ -213,16 +264,16 @@ private fun InboxRow(e: InboxEntry, fmt: SimpleDateFormat, onClick: () -> Unit) 
 // ===========================================================================
 
 /**
- * Asignar un movimiento. Dos cosas que antes no se podían hacer:
+ * Asignar un movimiento a uno o varios grupos.
  *
- *  - **llevarlo a varios grupos a la vez**: el recibo de la luz va al piso y
- *    al grupo de ahorro, y hacerlo dos veces obligaba a repetir el importe y
- *    la descripción a mano, con lo que eso tiene de erratas;
- *  - **decir que no es un movimiento**, que es la mitad que le faltaba a la
- *    calibración.
+ * Va a varios a la vez porque el recibo de la luz va al piso y al grupo de
+ * ahorro, y hacerlo dos veces obligaba a repetir importe y descripción a mano.
+ * Cada grupo elegido guarda su propio reparto: los miembros de uno no son los
+ * del otro y "quién paga" no se puede decidir una vez para todos.
  *
- * Cada grupo elegido guarda su propio reparto, porque los miembros de uno no
- * son los del otro y "quién paga" no se puede decidir una vez para todos.
+ * En un grupo de ahorro no se pregunta nada de eso: los papeles del grupo
+ * mandan, y lo dice en su sitio en vez de enseñar unos selectores que no se
+ * van a respetar.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -230,15 +281,33 @@ private fun AssignSheet(
     vm: MainViewModel,
     entry: InboxEntry,
     state: UiState,
+    preselectedGroupId: Int?,
     onDismiss: () -> Unit
 ) {
     val c = SmartTheme.colors
     val tricounts = state.tricounts
-    var asReimbursement by remember { mutableStateOf(vm.looksLikeReimbursement(entry)) }
+    // La propuesta de partida sale de AssignPlan, que es la misma decisión que
+    // tomaba el botón de la notificación cuando creaba el movimiento por su
+    // cuenta. Ahora no decide: rellena la hoja y se puede cambiar todo.
+    fun planOf(t: Tricount) = AssignPlan.planFor(entry, t)
 
-    // Selección por grupo: qué grupos, y dentro de cada uno quién paga y entre
-    // quiénes se reparte.
-    var chosen by remember { mutableStateOf(listOfNotNull(tricounts.firstOrNull()?.id)) }
+    var asReimbursement by remember {
+        mutableStateOf(
+            tricounts.firstOrNull { it.id == preselectedGroupId }
+                ?.let { planOf(it) is AssignPlan.Plan.Reimbursement }
+                ?: tricounts.firstOrNull()?.let { planOf(it) is AssignPlan.Plan.Reimbursement }
+                ?: false
+        )
+    }
+
+    var chosen by remember {
+        mutableStateOf(
+            listOfNotNull(
+                preselectedGroupId?.takeIf { id -> tricounts.any { it.id == id } }
+                    ?: tricounts.firstOrNull()?.id
+            )
+        )
+    }
     var payers by remember { mutableStateOf(mapOf<Int, String>()) }
     var splits by remember { mutableStateOf(mapOf<Int, Set<String>>()) }
 
@@ -251,20 +320,30 @@ private fun AssignSheet(
     val amount = amountText.replace(',', '.').toDoubleOrNull()
 
     fun membersOf(t: Tricount) = t.members.filter { it.status == "ACTIVE" }
-    fun payerOf(t: Tricount): Member? =
-        payers[t.id]?.let { t.memberByUuid(it) } ?: t.linkedMember ?: membersOf(t).firstOrNull()
+    fun payerOf(t: Tricount): Member? {
+        payers[t.id]?.let { uuid -> t.memberByUuid(uuid)?.let { return it } }
+        return when (val plan = planOf(t)) {
+            is AssignPlan.Plan.Reimbursement -> plan.payer
+            is AssignPlan.Plan.Expense -> plan.payer
+        }
+    }
+
     fun splitOf(t: Tricount): List<Member> {
-        val stored = splits[t.id]
-        return when {
-            stored != null -> membersOf(t).filter { it.uuid in stored }
-            asReimbursement -> emptyList()
-            else -> membersOf(t)
+        splits[t.id]?.let { stored -> return membersOf(t).filter { it.uuid in stored } }
+        return when (val plan = planOf(t)) {
+            // El Bizum dice con quién fue: quien lo recibe viene propuesto.
+            is AssignPlan.Plan.Reimbursement ->
+                if (asReimbursement) listOf(plan.receiver) else membersOf(t)
+            is AssignPlan.Plan.Expense ->
+                if (asReimbursement) emptyList() else plan.splitAmong
         }
     }
 
     val targets = chosen.mapNotNull { id -> tricounts.firstOrNull { it.id == id } }
     val valid = amount != null && amount > 0 && targets.isNotEmpty() &&
-        targets.all { payerOf(it) != null && splitOf(it).isNotEmpty() }
+        targets.all { t ->
+            state.isSavings(t.id) || (payerOf(t) != null && splitOf(t).isNotEmpty())
+        }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.background, dragHandle = null) {
         if (tricounts.isEmpty()) {
@@ -306,8 +385,8 @@ private fun AssignSheet(
                 Spacer(Modifier.height(16.dp))
             }
 
-            // Calibración, arriba del todo cuando el parser lo había descartado:
-            // es la decisión que hay que tomar antes que ninguna otra.
+            // Calibración, arriba del todo cuando no está en el cajón de los
+            // movimientos: es la decisión que hay que tomar antes que ninguna.
             if (!entry.isBankMovement) {
                 item {
                     Column(Modifier.padding(horizontal = ScreenPadding)) {
@@ -318,14 +397,14 @@ private fun AssignSheet(
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Si lo era, márcalo y podrás asignarlo. Rellena el importe si el " +
-                                "banco no lo puso en la notificación.",
+                            "Si lo era, márcalo y podrás asignarlo: su app pasa a estar " +
+                                "vigilada. Rellena el importe si el banco no lo puso.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = c.secondaryText
                         )
                         Spacer(Modifier.height(16.dp))
                         PrimaryButton("Sí es un movimiento bancario") {
-                            vm.setBankMovement(entry, true)
+                            vm.classifyInboxEntry(entry, InboxClass.BANK)
                         }
                         Spacer(Modifier.height(20.dp))
                     }
@@ -363,22 +442,26 @@ private fun AssignSheet(
                 }
             }
 
-            item {
-                SectionHeader("Tipo")
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = ScreenPadding),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    item {
-                        PillChip("Reembolso", asReimbursement) {
-                            asReimbursement = true
-                            splits = emptyMap()
+            val normalTargets = targets.filterNot { state.isSavings(it.id) }
+
+            if (normalTargets.isNotEmpty()) {
+                item {
+                    SectionHeader("Tipo")
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = ScreenPadding),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        item {
+                            PillChip("Reembolso", asReimbursement) {
+                                asReimbursement = true
+                                splits = emptyMap()
+                            }
                         }
-                    }
-                    item {
-                        PillChip("Gasto repartido", !asReimbursement) {
-                            asReimbursement = false
-                            splits = emptyMap()
+                        item {
+                            PillChip("Gasto repartido", !asReimbursement) {
+                                asReimbursement = false
+                                splits = emptyMap()
+                            }
                         }
                     }
                 }
@@ -394,12 +477,12 @@ private fun AssignSheet(
 
             // Las personas, grupo a grupo: los miembros de uno no son los del
             // otro, así que "quién paga" no se puede decidir una vez para todos.
-            targets.forEach { t ->
+            normalTargets.forEach { t ->
                 item(key = "payer-${t.id}") {
                     val members = membersOf(t)
                     Column {
                         SectionHeader(
-                            if (targets.size > 1) {
+                            if (normalTargets.size > 1) {
                                 "${t.title} · ${if (asReimbursement) "quién paga" else "quién pagó"}"
                             } else if (asReimbursement) "Quién paga" else "Quién pagó"
                         )
@@ -436,6 +519,23 @@ private fun AssignSheet(
                 }
             }
 
+            targets.filter { state.isSavings(it.id) }.forEach { t ->
+                item(key = "savings-${t.id}") {
+                    Text(
+                        "En «${t.title}» se registra con sus papeles: " +
+                            if (entry.kind.isMoneyIn) {
+                                "ingreso desde «${vm.incomeMember(t)?.displayName ?: "la fuente de ingresos"}» " +
+                                    "hacia «${vm.spenderMember(t)?.displayName ?: "quien gasta"}»."
+                            } else {
+                                "gasto a nombre de «${vm.spenderMember(t)?.displayName ?: "quien gasta"}»."
+                            },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.secondaryText,
+                        modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 8.dp)
+                    )
+                }
+            }
+
             item {
                 Column(Modifier.padding(ScreenPadding)) {
                     Spacer(Modifier.height(8.dp))
@@ -448,7 +548,7 @@ private fun AssignSheet(
                             targets.map { t ->
                                 MainViewModel.TargetGroup(
                                     tricount = t,
-                                    asReimbursement = asReimbursement,
+                                    asReimbursement = asReimbursement && !state.isSavings(t.id),
                                     payer = payerOf(t)!!,
                                     receiverOrSplit = splitOf(t)
                                 )
@@ -458,10 +558,19 @@ private fun AssignSheet(
                         onDismiss()
                     }
                     Spacer(Modifier.height(12.dp))
-                    if (entry.isBankMovement) {
-                        FooterAction("No es un movimiento bancario") {
-                            vm.setBankMovement(entry, false)
-                            onDismiss()
+
+                    // Los tres cajones, menos el que ya ocupa.
+                    InboxClass.entries.filter { it != entry.classification }.forEach { target ->
+                        FooterAction(
+                            when (target) {
+                                InboxClass.BANK -> "Es un movimiento bancario"
+                                InboxClass.OTHER -> "Moverlo a otros eventos"
+                                InboxClass.NON_BANK ->
+                                    "No es bancario · dejar de seguir «${entry.bankLabel}»"
+                            }
+                        ) {
+                            vm.classifyInboxEntry(entry, target)
+                            if (target != InboxClass.BANK) onDismiss()
                         }
                     }
                     FooterAction("Ignorar este movimiento") {
@@ -473,6 +582,48 @@ private fun AssignSheet(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/** Lo ya enviado a Tricount: mirar atrás sin salir de la bandeja. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistorySheet(
+    history: List<InboxEntry>,
+    state: UiState,
+    fmt: SimpleDateFormat,
+    onDismiss: () -> Unit
+) {
+    val c = SmartTheme.colors
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.background, dragHandle = null) {
+        LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
+            item {
+                Column(Modifier.padding(ScreenPadding)) {
+                    Text("Enviados", style = MaterialTheme.typography.titleLarge, color = c.primaryText)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Los últimos movimientos que salieron de la bandeja. Para cambiarlos, " +
+                            "búscalos en su grupo: allí es donde viven.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = c.secondaryText
+                    )
+                }
+            }
+            items(history, key = { it.id }) { e ->
+                val group = state.tricounts.firstOrNull { it.id == e.tricountId }
+                SmartRow(
+                    title = e.merchant ?: e.counterparty ?: e.concept ?: e.kind.label,
+                    subtitle = listOfNotNull(
+                        group?.title ?: "grupo desconocido",
+                        fmt.format(Date(e.detectedAt))
+                    ).joinToString(" · "),
+                    value = e.amount?.let { formatMoney(it, e.currency) } ?: "—",
+                    valueColor = c.secondaryText,
+                    leading = { Initials(e.merchant ?: e.counterparty ?: e.bankLabel) }
+                )
+                SmartDivider()
             }
         }
     }

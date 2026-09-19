@@ -109,6 +109,8 @@ data class Transaction(
     val ownerUuid: String,
     val allocations: List<Allocation>,
     val date: String,
+    /** Cuándo lo registró el servidor. No es `date`: esa la pone quien lo crea. */
+    val created: String = "",
     val status: String = "ACTIVE",
     val type: TxType = TxType.NORMAL,
     val category: String? = null,
@@ -128,6 +130,7 @@ data class Transaction(
                     ?.mapNotNull { (it as? JsonObject)?.let(Allocation::parse) }
                     ?: emptyList(),
                 date = o.str("date").orEmpty(),
+                created = o.str("created").orEmpty(),
                 status = o.str("status") ?: "ACTIVE",
                 type = runCatching { TxType.valueOf(o.str("type_transaction") ?: "NORMAL") }
                     .getOrDefault(TxType.NORMAL),
@@ -200,3 +203,42 @@ data class SettlementLeg(
     val toName: String,
     val amount: Double
 )
+
+/**
+ * Cómo se reparte un movimiento entre los miembros elegidos.
+ *
+ * `fixed` lleva, por uuid y siempre en positivo, las partes que la persona ha
+ * fijado a mano. Los demás miembros viajan como `RATIO` y es el **servidor**
+ * quien reparte lo que queda.
+ *
+ * No es un capricho: es lo que hace la app oficial, comprobado leyendo sus
+ * movimientos y reproducido contra la API. Un gasto repartido a partes
+ * iguales llega con todas las asignaciones en `RATIO`, y en uno desigual solo
+ * las partes tocadas a mano son `AMOUNT`. Tiene dos ventajas sobre calcularlo
+ * todo aquí: el céntimo suelto de un reparto no divisible lo coloca quien
+ * lleva la cuenta, y una parte fijada queda guardada **como fijada**, no como
+ * un número que ya nadie distingue de un reparto igualitario.
+ *
+ * La API **rechaza** (HTTP 400) las asignaciones que no suman el total, así
+ * que fijarlas todas obliga a cuadrarlas: [validate] lo dice antes de salir.
+ */
+data class Split(
+    val members: List<Member>,
+    val fixed: Map<String, Double> = emptyMap()
+) {
+    /** Los que no llevan cantidad fijada: entre ellos se reparte lo que sobra. */
+    val free: List<Member> get() = members.filterNot { it.uuid in fixed }
+
+    val fixedTotal: Double
+        get() = members.mapNotNull { fixed[it.uuid] }.sumOf { kotlin.math.abs(it) }
+
+    /** Lo que queda por repartir entre los libres. */
+    fun remainder(total: Double): Double = total - fixedTotal
+
+    val isCustom: Boolean get() = fixed.isNotEmpty()
+
+    companion object {
+        /** A partes iguales: ninguna cantidad fijada. */
+        fun evenly(members: List<Member>) = Split(members)
+    }
+}
