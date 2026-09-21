@@ -178,7 +178,7 @@ internal val TxType.label: String
     }
 
 /** Cómo se reparte: a partes iguales o poniendo tú las cantidades. */
-private enum class SplitMode(val label: String) { EVEN("A partes iguales"), AMOUNTS("Por cantidades") }
+internal enum class SplitMode(val label: String) { EVEN("A partes iguales"), AMOUNTS("Por cantidades") }
 
 /**
  * El día que elige el calendario viene en UTC a medianoche. Convertirlo con
@@ -598,7 +598,7 @@ fun ExpenseSheet(
  * toca, que es información y no un campo que invite a tocarlo.
  */
 @Composable
-private fun MemberSplitRow(
+internal fun MemberSplitRow(
     member: Member,
     included: Boolean,
     currency: String,

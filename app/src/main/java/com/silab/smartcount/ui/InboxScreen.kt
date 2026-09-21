@@ -34,6 +34,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silab.smartcount.data.api.Member
+import com.silab.smartcount.data.api.Split
+import com.silab.smartcount.data.api.TricountClient
 import com.silab.smartcount.data.api.Tricount
 import com.silab.smartcount.data.db.Confidence
 import com.silab.smartcount.data.db.InboxClass
@@ -311,6 +313,12 @@ private fun AssignSheet(
     var payers by remember { mutableStateOf(mapOf<Int, String>()) }
     var splits by remember { mutableStateOf(mapOf<Int, Set<String>>()) }
 
+    // El reparto desigual, grupo a grupo: en qué grupos se pone la cantidad a
+    // mano, y cuánto lleva cada uuid. Va por grupo y no una sola vez porque los
+    // miembros de uno no son los del otro y el mismo cargo puede ir a varios.
+    var byAmounts by remember { mutableStateOf(setOf<Int>()) }
+    var splitAmounts by remember { mutableStateOf(mapOf<Int, Map<String, String>>()) }
+
     var description by remember {
         mutableStateOf(entry.concept ?: entry.merchant ?: entry.counterparty ?: entry.kind.label)
     }
@@ -339,10 +347,41 @@ private fun AssignSheet(
         }
     }
 
+    /** Las partes fijadas a mano de un grupo, ya en número y solo de quien entra. */
+    fun fixedOf(t: Tricount): Map<String, Double> =
+        if (t.id !in byAmounts) {
+            emptyMap()
+        } else {
+            splitOf(t).mapNotNull { m ->
+                splitAmounts[t.id]?.get(m.uuid)
+                    ?.replace(',', '.')?.toDoubleOrNull()
+                    ?.let { m.uuid to it }
+            }.toMap()
+        }
+
+    /**
+     * Qué le falta al reparto de este grupo para cuadrar. La API rechaza las
+     * asignaciones que no suman el total, así que se dice aquí en vez de
+     * enseñar luego su error.
+     */
+    fun splitErrorOf(t: Tricount): String? {
+        if (amount == null || asReimbursement || state.isSavings(t.id) || t.id !in byAmounts) return null
+        val split = Split(splitOf(t), fixedOf(t))
+        val pending = split.remainder(amount)
+        return when {
+            split.free.isEmpty() && pending > 0.005 ->
+                "Faltan ${formatMoney(pending, t.currency)} por asignar"
+            pending < -0.005 ->
+                "Las partes se pasan en ${formatMoney(-pending, t.currency)}"
+            else -> null
+        }
+    }
+
     val targets = chosen.mapNotNull { id -> tricounts.firstOrNull { it.id == id } }
     val valid = amount != null && amount > 0 && targets.isNotEmpty() &&
         targets.all { t ->
-            state.isSavings(t.id) || (payerOf(t) != null && splitOf(t).isNotEmpty())
+            state.isSavings(t.id) ||
+                (payerOf(t) != null && splitOf(t).isNotEmpty() && splitErrorOf(t) == null)
         }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.background, dragHandle = null) {
@@ -455,12 +494,16 @@ private fun AssignSheet(
                             PillChip("Reembolso", asReimbursement) {
                                 asReimbursement = true
                                 splits = emptyMap()
+                                byAmounts = emptySet()
+                                splitAmounts = emptyMap()
                             }
                         }
                         item {
                             PillChip("Gasto repartido", !asReimbursement) {
                                 asReimbursement = false
                                 splits = emptyMap()
+                                byAmounts = emptySet()
+                                splitAmounts = emptyMap()
                             }
                         }
                     }
@@ -499,20 +542,97 @@ private fun AssignSheet(
                         SectionHeader(
                             if (asReimbursement) "Quién lo recibe" else "Repartido entre"
                         )
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = ScreenPadding),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(members, key = { it.uuid }) { m ->
-                                val current = splitOf(t).map { it.uuid }.toSet()
-                                PillChip(m.displayName, m.uuid in current) {
-                                    val next = when {
-                                        asReimbursement -> setOf(m.uuid)
-                                        m.uuid in current -> current - m.uuid
-                                        else -> current + m.uuid
+                        if (asReimbursement) {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = ScreenPadding),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(members, key = { it.uuid }) { m ->
+                                    PillChip(m.displayName, splitOf(t).any { it.uuid == m.uuid }) {
+                                        splits = splits + (t.id to setOf(m.uuid))
                                     }
-                                    splits = splits + (t.id to next)
                                 }
+                            }
+                        } else {
+                            // Un gasto repartido se puede dividir a partes
+                            // iguales o con la cantidad de cada uno puesta a
+                            // mano, igual que en la hoja del grupo: la cena en
+                            // la que uno no bebió llega desde la notificación
+                            // sin tener que corregirla luego en Tricount.
+                            val amounts = splitAmounts[t.id].orEmpty()
+                            val custom = t.id in byAmounts
+                            val chosenMembers = splitOf(t)
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = ScreenPadding),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(SplitMode.entries.toList(), key = { it.name }) { option ->
+                                    val selected = (option == SplitMode.AMOUNTS) == custom
+                                    PillChip(option.label, selected) {
+                                        if (option == SplitMode.AMOUNTS) {
+                                            byAmounts = byAmounts + t.id
+                                        } else {
+                                            byAmounts = byAmounts - t.id
+                                            splitAmounts = splitAmounts - t.id
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            members.forEach { m ->
+                                val included = chosenMembers.any { it.uuid == m.uuid }
+                                val shareText = when {
+                                    !included -> "—"
+                                    custom -> null   // lo pone el campo
+                                    amount == null -> "—"
+                                    else -> {
+                                        val i = chosenMembers.indexOfFirst { it.uuid == m.uuid }
+                                        val parts = TricountClient.previewSplit(amount, chosenMembers.size)
+                                        formatMoney(parts.getOrElse(i) { 0.0 }, t.currency)
+                                    }
+                                }
+                                MemberSplitRow(
+                                    member = m,
+                                    included = included,
+                                    currency = t.currency,
+                                    shareText = shareText,
+                                    amountText = amounts[m.uuid].orEmpty(),
+                                    editable = custom,
+                                    onToggle = {
+                                        val current = chosenMembers.map { it.uuid }.toSet()
+                                        splits = splits + (t.id to
+                                            if (included) current - m.uuid else current + m.uuid)
+                                        if (included) {
+                                            splitAmounts = splitAmounts + (t.id to (amounts - m.uuid))
+                                        }
+                                    },
+                                    onAmountChange = { raw ->
+                                        splitAmounts = splitAmounts + (t.id to
+                                            if (raw.isBlank()) amounts - m.uuid else amounts + (m.uuid to raw))
+                                        if (raw.isNotBlank() && !included) {
+                                            splits = splits + (t.id to
+                                                (chosenMembers.map { it.uuid }.toSet() + m.uuid))
+                                        }
+                                    }
+                                )
+                                SmartDivider()
+                            }
+                            if (custom) {
+                                val error = splitErrorOf(t)
+                                val free = Split(chosenMembers, fixedOf(t)).free.size
+                                val pending = amount?.let { Split(chosenMembers, fixedOf(t)).remainder(it) } ?: 0.0
+                                Text(
+                                    when {
+                                        error != null -> error
+                                        free > 0 && pending > 0.005 ->
+                                            "${formatMoney(pending, t.currency)} para " +
+                                                (if (free == 1) "el que queda" else "los $free que quedan")
+                                        else -> "Deja en blanco a quien deba repartirse lo que sobre."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (error != null) c.negative else c.secondaryText,
+                                    modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 10.dp)
+                                )
                             }
                         }
                     }
@@ -550,7 +670,8 @@ private fun AssignSheet(
                                     tricount = t,
                                     asReimbursement = asReimbursement && !state.isSavings(t.id),
                                     payer = payerOf(t)!!,
-                                    receiverOrSplit = splitOf(t)
+                                    receiverOrSplit = splitOf(t),
+                                    fixed = if (asReimbursement) emptyMap() else fixedOf(t)
                                 )
                             },
                             description.trim(), amount!!, null

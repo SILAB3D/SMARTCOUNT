@@ -445,7 +445,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val tricount: Tricount,
         val asReimbursement: Boolean,
         val payer: Member,
-        val receiverOrSplit: List<Member>
+        val receiverOrSplit: List<Member>,
+        /**
+         * Las partes puestas a mano, por uuid. Vacío = a partes iguales, que
+         * es lo que hace el servidor con las asignaciones `RATIO`. Va por
+         * grupo y no una vez para todos porque los miembros de uno no son los
+         * del otro.
+         */
+        val fixed: Map<String, Double> = emptyMap()
     )
 
     fun pushInboxEntry(
@@ -503,7 +510,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 else -> client.createExpense(
-                    t, description, amount, target.payer, Split(target.receiverOrSplit),
+                    t, description, amount, target.payer,
+                    Split(target.receiverOrSplit, target.fixed.filterKeys { uuid ->
+                        target.receiverOrSplit.any { it.uuid == uuid }
+                    }),
                     category, date = Date(entry.detectedAt)
                 )
             }

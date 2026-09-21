@@ -95,9 +95,11 @@ object DetectionNotifier {
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
 
+        // Solo el nombre del grupo: el prefijo «Ahorro: » se comía la mitad
+        // del botón y dejaba el nombre cortado, que es justo lo único que
+        // hace falta leer para elegir.
         groups.forEach { g ->
-            val prefix = if (g.savings) "Ahorro: " else ""
-            builder.addAction(0, prefix + g.title.take(16), openIntent(context, entry.id, g.id))
+            builder.addAction(0, g.title.take(24), openIntent(context, entry.id, g.id))
         }
         builder.addAction(0, "Elegir…", openIntent(context, entry.id, null))
 
