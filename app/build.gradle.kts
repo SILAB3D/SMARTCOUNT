@@ -76,7 +76,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = smartCountVersionCode
-        versionName = "1.4"
+        versionName = "1.6"
     }
 
     signingConfigs {

@@ -2,6 +2,7 @@ package com.silab.smartcount.ui
 
 import android.content.Intent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,10 +14,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -29,8 +33,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.silab.smartcount.data.api.Member
@@ -310,6 +316,9 @@ private fun AssignSheet(
             )
         )
     }
+    // La lista de grupos se despliega: en línea obligaba a arrastrar para ver
+    // los de más allá, y el que ya está elegido se lee de un vistazo cerrada.
+    var groupsOpen by remember { mutableStateOf(false) }
     var payers by remember { mutableStateOf(mapOf<Int, String>()) }
     var splits by remember { mutableStateOf(mapOf<Int, Set<String>>()) }
 
@@ -461,16 +470,13 @@ private fun AssignSheet(
                         }
                     )
                 }
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = ScreenPadding),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(tricounts, key = { it.id }) { g ->
-                        PillChip("${g.emoji ?: ""} ${g.title}".trim(), g.id in chosen) {
-                            chosen = if (g.id in chosen) chosen - g.id else chosen + g.id
-                        }
-                    }
-                }
+                GroupPicker(
+                    groups = tricounts,
+                    chosen = chosen,
+                    open = groupsOpen,
+                    onToggleOpen = { groupsOpen = !groupsOpen },
+                    onToggleGroup = { id -> chosen = if (id in chosen) chosen - id else chosen + id }
+                )
                 if (chosen.size > 1) {
                     Text(
                         "Se creará el mismo movimiento en ${chosen.size} grupos.",
@@ -578,7 +584,7 @@ private fun AssignSheet(
                                     }
                                 }
                             }
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(16.dp))
                             members.forEach { m ->
                                 val included = chosenMembers.any { it.uuid == m.uuid }
                                 val shareText = when {
@@ -678,28 +684,25 @@ private fun AssignSheet(
                         )
                         onDismiss()
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(16.dp))
 
-                    // Los tres cajones, menos el que ya ocupa.
-                    InboxClass.entries.filter { it != entry.classification }.forEach { target ->
-                        FooterAction(
-                            when (target) {
-                                InboxClass.BANK -> "Es un movimiento bancario"
-                                InboxClass.OTHER -> "Moverlo a otros eventos"
-                                InboxClass.NON_BANK ->
-                                    "No es bancario · dejar de seguir «${entry.bankLabel}»"
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Los tres cajones, menos el que ya ocupa.
+                        InboxClass.entries.filter { it != entry.classification }.forEach { target ->
+                            FooterAction(
+                                when (target) {
+                                    InboxClass.BANK -> "Es un movimiento bancario"
+                                    InboxClass.OTHER -> "Moverlo a otros eventos"
+                                    InboxClass.NON_BANK ->
+                                        "No es bancario · dejar de seguir «${entry.bankLabel}»"
+                                }
+                            ) {
+                                vm.classifyInboxEntry(entry, target)
+                                if (target != InboxClass.BANK) onDismiss()
                             }
-                        ) {
-                            vm.classifyInboxEntry(entry, target)
-                            if (target != InboxClass.BANK) onDismiss()
                         }
-                    }
-                    FooterAction("Ignorar este movimiento") {
-                        vm.ignoreInboxEntry(entry); onDismiss()
-                    }
-                    (entry.merchant ?: entry.counterparty)?.let { source ->
-                        FooterAction("No volver a avisar de «$source»") {
-                            vm.muteSource(entry, source); onDismiss()
+                        FooterAction("Ignorar este movimiento") {
+                            vm.ignoreInboxEntry(entry); onDismiss()
                         }
                     }
                 }
@@ -750,14 +753,121 @@ private fun HistorySheet(
     }
 }
 
+/**
+ * Los grupos, desplegables y con marca de selección.
+ *
+ * Cerrada dice a cuáles va el movimiento sin que haya que leer una fila de
+ * píldoras a medio ver; abierta enseña todos de arriba abajo, que es como se
+ * comparan. Sigue admitiendo varios a la vez: la misma casilla que en el
+ * reparto entre miembros, para que marcar signifique lo mismo en toda la hoja.
+ */
+@Composable
+private fun GroupPicker(
+    groups: List<Tricount>,
+    chosen: List<Int>,
+    open: Boolean,
+    onToggleOpen: () -> Unit,
+    onToggleGroup: (Int) -> Unit
+) {
+    val c = SmartTheme.colors
+    fun label(g: Tricount) = "${g.emoji ?: ""} ${g.title}".trim()
+    val summary = when (chosen.size) {
+        0 -> "Ningún grupo elegido"
+        1 -> groups.firstOrNull { it.id == chosen.first() }?.let(::label) ?: "Un grupo"
+        else -> "${chosen.size} grupos elegidos"
+    }
+
+    Column(Modifier.padding(horizontal = ScreenPadding)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(c.chipBackground)
+                .clickable(onClick = onToggleOpen)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                summary,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (chosen.isEmpty()) c.secondaryText else c.primaryText,
+                maxLines = 1,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(if (open) "▴" else "▾", color = c.secondaryText)
+        }
+
+        if (open) {
+            Spacer(Modifier.height(8.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(c.surface)
+            ) {
+                groups.forEachIndexed { i, g ->
+                    val selected = g.id in chosen
+                    if (i > 0) SmartDivider()
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onToggleGroup(g.id) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(22.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (selected) c.chipSelected else c.chipBackground),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (selected) {
+                                Text(
+                                    "✓",
+                                    color = c.chipSelectedText,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            label(g),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (selected) c.primaryText else c.secondaryText,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Las salidas de la hoja: la misma píldora que el botón de enviar, pero
+ * hueca. Se ven y se pulsan igual de bien; no compiten con la acción
+ * principal porque no llevan relleno ni peso en la letra.
+ */
 @Composable
 private fun FooterAction(text: String, onClick: () -> Unit) {
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    val c = SmartTheme.colors
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(100))
+            .border(1.dp, c.divider, RoundedCornerShape(100))
+            .clickable(onClick = onClick)
+            .padding(vertical = 13.dp, horizontal = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
         Text(
             text,
-            color = SmartTheme.colors.secondaryText,
+            color = c.secondaryText,
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.clickable(onClick = onClick).padding(12.dp)
+            textAlign = TextAlign.Center
         )
     }
 }
