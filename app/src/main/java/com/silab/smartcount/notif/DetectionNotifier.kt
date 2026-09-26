@@ -98,8 +98,8 @@ object DetectionNotifier {
         // Solo el nombre del grupo: el prefijo «Ahorro: » se comía la mitad
         // del botón y dejaba el nombre cortado, que es justo lo único que
         // hace falta leer para elegir.
-        groups.forEach { g ->
-            builder.addAction(0, g.title.take(24), openIntent(context, entry.id, g.id))
+        groups.forEachIndexed { i, g ->
+            builder.addAction(0, g.title.take(24), openIntent(context, entry.id, g.id, slot = i + 1))
         }
         builder.addAction(0, "Elegir…", openIntent(context, entry.id, null))
 
@@ -111,11 +111,18 @@ object DetectionNotifier {
      * Abre la app en la bandeja, con este movimiento y —si el botón traía
      * uno— con ese grupo ya marcado.
      */
-    private fun openIntent(context: Context, entryId: Long, groupId: Int?): PendingIntent {
+    private fun openIntent(
+        context: Context,
+        entryId: Long,
+        groupId: Int?,
+        slot: Int = 0
+    ): PendingIntent {
         // Un requestCode distinto por botón: con el mismo, el segundo
         // PendingIntent reutilizaría los extras del primero y los tres
-        // botones acabarían haciendo lo mismo.
-        val requestCode = (entryId * 10 + (groupId?.rem(7)?.plus(1) ?: 0)).toInt()
+        // botones acabarían haciendo lo mismo. Va por la posición del botón y
+        // no por el id del grupo: sacarlo del id (antes `id % 7`) hacía que
+        // dos grupos pudieran coincidir y los dos botones abrieran el mismo.
+        val requestCode = (entryId * 10 + slot).toInt()
         return PendingIntent.getActivity(
             context,
             requestCode,

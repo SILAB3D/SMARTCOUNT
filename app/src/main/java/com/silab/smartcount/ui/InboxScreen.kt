@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -207,7 +208,12 @@ fun InboxScreen(
         // La lista viene del flujo, así que la entrada se relee para que el
         // cambio de cajón se vea sin cerrar nada.
         val live = inbox.firstOrNull { it.id == entry.id } ?: entry
-        AssignSheet(vm, live, state, preselected) { assigning = null; preselected = null }
+        // Una hoja por movimiento y por grupo de partida: sin la clave, abrir
+        // otro movimiento con la hoja ya abierta heredaba el grupo elegido en
+        // el anterior en vez del que traía la notificación.
+        key(live.id, preselected) {
+            AssignSheet(vm, live, state, preselected) { assigning = null; preselected = null }
+        }
     }
 
     if (showHistory) {
@@ -299,22 +305,37 @@ private fun AssignSheet(
     // cuenta. Ahora no decide: rellena la hoja y se puede cambiar todo.
     fun planOf(t: Tricount) = AssignPlan.planFor(entry, t)
 
-    var asReimbursement by remember {
-        mutableStateOf(
-            tricounts.firstOrNull { it.id == preselectedGroupId }
-                ?.let { planOf(it) is AssignPlan.Plan.Reimbursement }
-                ?: tricounts.firstOrNull()?.let { planOf(it) is AssignPlan.Plan.Reimbursement }
-                ?: false
-        )
+    fun isReimbursementIn(t: Tricount?) = t?.let { planOf(it) is AssignPlan.Plan.Reimbursement } ?: false
+
+    /**
+     * El grupo con el que arranca la hoja: el del botón de la notificación, o
+     * el primero si se entró por «Elegir…» o desde la bandeja. Null mientras
+     * ese grupo todavía no ha llegado.
+     */
+    fun startingGroup(): Tricount? {
+        preselectedGroupId?.let { id ->
+            tricounts.firstOrNull { it.id == id }?.let { return it }
+            // Al abrir la app desde la notificación la hoja sale antes de que
+            // termine de cargar la lista de grupos. Hay que esperar a que
+            // llegue el del botón: caer al primero es lo que hacía que el
+            // movimiento acabara en otro grupo.
+            if (tricounts.isEmpty() || state.loading) return null
+        }
+        return tricounts.firstOrNull()
     }
 
-    var chosen by remember {
-        mutableStateOf(
-            listOfNotNull(
-                preselectedGroupId?.takeIf { id -> tricounts.any { it.id == id } }
-                    ?: tricounts.firstOrNull()?.id
-            )
-        )
+    val start = startingGroup()
+    var asReimbursement by remember { mutableStateOf(isReimbursementIn(start)) }
+    var chosen by remember { mutableStateOf(listOfNotNull(start?.id)) }
+
+    // Si la hoja se abrió sin grupos, se pone el de partida en cuanto llegan,
+    // salvo que para entonces ya se haya tocado la elección a mano.
+    var seeded by remember { mutableStateOf(start != null) }
+    LaunchedEffect(start?.id) {
+        if (seeded || start == null) return@LaunchedEffect
+        chosen = listOf(start.id)
+        asReimbursement = isReimbursementIn(start)
+        seeded = true
     }
     // La lista de grupos se despliega: en línea obligaba a arrastrar para ver
     // los de más allá, y el que ya está elegido se lee de un vistazo cerrada.
@@ -466,6 +487,7 @@ private fun AssignSheet(
                         color = c.secondaryText,
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.clickable {
+                            seeded = true
                             chosen = if (chosen.size == tricounts.size) emptyList() else tricounts.map { it.id }
                         }
                     )
@@ -475,7 +497,10 @@ private fun AssignSheet(
                     chosen = chosen,
                     open = groupsOpen,
                     onToggleOpen = { groupsOpen = !groupsOpen },
-                    onToggleGroup = { id -> chosen = if (id in chosen) chosen - id else chosen + id }
+                    onToggleGroup = { id ->
+                        seeded = true
+                        chosen = if (id in chosen) chosen - id else chosen + id
+                    }
                 )
                 if (chosen.size > 1) {
                     Text(
